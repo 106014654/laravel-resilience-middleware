@@ -2,8 +2,9 @@
 
 namespace OneLap\LaravelResilienceMiddleware\Tests;
 
-use PHPUnit\Framework\TestCase;
+use Orchestra\Testbench\TestCase;
 use OneLap\LaravelResilienceMiddleware\Services\SystemMonitorService;
+use OneLap\LaravelResilienceMiddleware\ResilienceMiddlewareServiceProvider;
 
 class SystemMonitorServiceTest extends TestCase
 {
@@ -13,6 +14,32 @@ class SystemMonitorServiceTest extends TestCase
     {
         parent::setUp();
         $this->systemMonitor = new SystemMonitorService();
+    }
+
+    protected function getPackageProviders($app)
+    {
+        return [
+            ResilienceMiddlewareServiceProvider::class,
+        ];
+    }
+
+    protected function defineEnvironment($app)
+    {
+        // 设置测试环境配置
+        $app['config']->set('resilience.system_monitor', [
+            'pressure_weights' => [
+                'cpu' => 0.4,
+                'memory' => 0.3,
+                'redis' => 0.2,
+                'mysql' => 0.1,
+            ],
+            'pressure_thresholds' => [
+                'low' => 30,
+                'medium' => 60,
+                'high' => 80,
+                'critical' => 95,
+            ],
+        ]);
     }
 
     public function testGetCpuUsage()

@@ -1,0 +1,54 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "运行 PHPUnit 测试",
+            "type": "php",
+            "request": "launch",
+            "program": "${workspaceFolder}/vendor/bin/phpunit",
+            "args": [
+                "--configuration",
+                "${workspaceFolder}/phpunit.xml",
+                "--verbose"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "XDEBUG_MODE": "debug"
+            }
+        },
+        {
+            "name": "调试单个测试文件",
+            "type": "php",
+            "request": "launch",
+            "program": "${workspaceFolder}/vendor/bin/phpunit",
+            "args": [
+                "${file}",
+                "--verbose"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "XDEBUG_MODE": "debug"
+            }
+        },
+        {
+            "name": "运行验证脚本",
+            "type": "php",
+            "request": "launch",
+            "program": "${workspaceFolder}/validate.php",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "XDEBUG_MODE": "debug"
+            }
+        },
+        {
+            "name": "调试当前 PHP 文件",
+            "type": "php",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${fileDirname}",
+            "env": {
+                "XDEBUG_MODE": "debug"
+            }
+        }
+    ]
+}

@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest" file="D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php" tests="5" assertions="0" errors="5" warnings="0" failures="0" skipped="0" time="0.003384">
+    <testcase name="testCpuUsageIsValid" class="OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest" classname="OneLap.LaravelResilienceMiddleware.Tests.SimpleSystemMonitorTest" file="D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php" line="85" assertions="0" time="0.003201">
+      <error type="Illuminate\Contracts\Container\BindingResolutionException">OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest::testCpuUsageIsValid
+Illuminate\Contracts\Container\BindingResolutionException: Target class [config] does not exist.
+
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:879
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:758
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:694
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:119
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:275
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\src\Services\SystemMonitorService.php:21
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php:56
+phpvfscomposer://D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\phpunit\phpunit\phpunit:106</error>
+    </testcase>
+    <testcase name="testMemoryUsageIsValid" class="OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest" classname="OneLap.LaravelResilienceMiddleware.Tests.SimpleSystemMonitorTest" file="D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php" line="103" assertions="0" time="0.000062">
+      <error type="Illuminate\Contracts\Container\BindingResolutionException">OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest::testMemoryUsageIsValid
+Illuminate\Contracts\Container\BindingResolutionException: Target class [config] does not exist.
+
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:879
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:758
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:694
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:119
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:275
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\src\Services\SystemMonitorService.php:21
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php:56
+phpvfscomposer://D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\phpunit\phpunit\phpunit:106</error>
+    </testcase>
+    <testcase name="testGetSystemPressureLevelReturnsString" class="OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest" classname="OneLap.LaravelResilienceMiddleware.Tests.SimpleSystemMonitorTest" file="D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php" line="77" assertions="0" time="0.000049">
+      <error type="Illuminate\Contracts\Container\BindingResolutionException">OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest::testGetSystemPressureLevelReturnsString
+Illuminate\Contracts\Container\BindingResolutionException: Target class [config] does not exist.
+
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:879
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:758
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:694
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:119
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:275
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\src\Services\SystemMonitorService.php:21
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php:56
+phpvfscomposer://D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\phpunit\phpunit\phpunit:106</error>
+    </testcase>
+    <testcase name="testGetSystemHealthReturnsArray" class="OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest" classname="OneLap.LaravelResilienceMiddleware.Tests.SimpleSystemMonitorTest" file="D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php" line="64" assertions="0" time="0.000033">
+      <error type="Illuminate\Contracts\Container\BindingResolutionException">OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest::testGetSystemHealthReturnsArray
+Illuminate\Contracts\Container\BindingResolutionException: Target class [config] does not exist.
+
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:879
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:758
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:694
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:119
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:275
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\src\Services\SystemMonitorService.php:21
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php:56
+phpvfscomposer://D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\phpunit\phpunit\phpunit:106</error>
+    </testcase>
+    <testcase name="testSystemMonitorServiceInstantiation" class="OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest" classname="OneLap.LaravelResilienceMiddleware.Tests.SimpleSystemMonitorTest" file="D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php" line="59" assertions="0" time="0.000039">
+      <error type="Illuminate\Contracts\Container\BindingResolutionException">OneLap\LaravelResilienceMiddleware\Tests\SimpleSystemMonitorTest::testSystemMonitorServiceInstantiation
+Illuminate\Contracts\Container\BindingResolutionException: Target class [config] does not exist.
+
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:879
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:758
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Container\Container.php:694
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:119
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\laravel\framework\src\Illuminate\Foundation\helpers.php:275
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\src\Services\SystemMonitorService.php:21
+D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\tests\SimpleSystemMonitorTest.php:56
+phpvfscomposer://D:\software\phpstudy_pro\WWW\laravel-resilience-middleware\vendor\phpunit\phpunit\phpunit:106</error>
+    </testcase>
+  </testsuite>
+</testsuites>
