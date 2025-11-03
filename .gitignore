@@ -3,3 +3,5 @@ composer.lock
 .env
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
