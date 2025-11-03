@@ -226,7 +226,7 @@ class SimpleHealthMonitor
             $host = '127.0.0.1';
             $port = 3306;
             $username = 'root';
-            $password = ''; // 根据实际情况修改
+            $password = '123456'; // 根据实际情况修改
             $database = 'mysql'; // 系统数据库
 
             echo "连接地址: {$host}:{$port}\n";

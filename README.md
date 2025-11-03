@@ -258,14 +258,6 @@ Route::middleware('web')->group(base_path('routes/resilience-examples.php'));
 - PHP 7.1+
 - Redis 3.0+ (可选)
 
-## 许可证
-
-MIT License
-
-## 贡献
-
-欢迎提交 Pull Request 和 Issue！
-
 ## 支持
 
 如果你发现任何问题或需要帮助，请：

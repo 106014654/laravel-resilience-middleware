@@ -19,6 +19,7 @@ class SystemMonitorService
 {
     protected $redis;
     protected $config;
+    protected $db;
     protected $redisConnectionTimeout = 2;  // Redis连接超时时间（秒）
     protected $mysqlConnectionTimeout = 3;  // MySQL连接超时时间（秒）
 
@@ -27,6 +28,38 @@ class SystemMonitorService
         $this->config = config('resilience.system_monitor', []);
         $this->redisConnectionTimeout = $this->config['redis_connection_timeout'] ?? 2;
         $this->mysqlConnectionTimeout = $this->config['mysql_connection_timeout'] ?? 3;
+
+        // 初始化Redis连接
+        if (isset($this->config['redis']['connection'])) {
+            $this->redis = Redis::connection($this->config['redis']['connection']);
+        } else {
+            $this->redis = Redis::connection('default');
+        }
+
+        // 初始化数据库连接
+        try {
+            $connection = $this->config['database']['connection'] ?? config('database.default', 'mysql');
+            $this->db = DB::connection($connection);
+            // 测试连接是否有效
+            try {
+                DB::raw('SELECT 1');
+            } catch (\Exception $e) {
+                throw $e;
+            }
+        } catch (\Exception $e) {
+            Log::error('数据库连接初始化失败', [
+                'error' => $e->getMessage(),
+                'connection' => $connection
+            ]);
+            // 使用默认连接作为备选
+            try {
+                $this->db = DB::connection('mysql');
+                DB::raw('SELECT 1');
+            } catch (\Exception $e) {
+                Log::error('默认数据库连接也失败', ['error' => $e->getMessage()]);
+                throw new \RuntimeException('无法建立数据库连接: ' . $e->getMessage());
+            }
+        }
     }
 
     /**
@@ -41,7 +74,7 @@ class SystemMonitorService
             'memory' => $this->getMemoryUsage(),
             'redis' => $this->getRedisHealth(),
             'mysql' => $this->getMysqlHealth(),
-            'load_average' => $this->getLoadAverage(),
+            // 'load_average' => $this->getLoadAverage(),
             'timestamp' => time()
         ];
     }
@@ -207,40 +240,87 @@ class SystemMonitorService
     protected function getRedisHealth(): ?float
     {
         try {
-            // 连接Redis并获取信息
-            $redis = Redis::connection();
-            $pong = $redis->ping();
+            // 使用指定的Redis连接
+            $pong = $this->redis->ping();
 
-            if ($pong !== 'PONG' && $pong !== true) {
-                Log::warning('Redis ping failed: unexpected response');
+            // 正确处理 Predis 的响应
+            $pingSuccess = false;
+            if (is_object($pong) && method_exists($pong, 'getPayload')) {
+                // Predis\Response\Status 对象
+                $pingSuccess = $pong->getPayload() === 'PONG';
+            } elseif (is_string($pong)) {
+                // 字符串响应
+                $pingSuccess = $pong === 'PONG';
+            } elseif (is_bool($pong)) {
+                // 布尔响应
+                $pingSuccess = $pong === true;
+            } else {
+                // 尝试转换为字符串比较
+                $pingSuccess = (string)$pong === 'PONG';
+            }
+
+            if (!$pingSuccess) {
+                Log::warning('Redis ping failed: unexpected response', [
+                    'response_type' => gettype($pong),
+                    'response_class' => is_object($pong) ? get_class($pong) : null,
+                    'response_value' => is_object($pong) ? (string)$pong : $pong
+                ]);
                 return null;
             }
 
             // 获取Redis服务器信息
-            $info = $redis->info();
+            $info = $this->redis->info();
+
+            // 从嵌套结构中提取内存信息
+            $usedMemory = null;
+            $maxMemory = null;
+
+            // 尝试从 Memory 部分获取
+            if (isset($info['Memory'])) {
+                $usedMemory = $info['Memory']['used_memory'] ?? null;
+                $maxMemory = $info['Memory']['maxmemory'] ?? null;
+            }
+
+            // 兼容性：如果 Memory 部分不存在，尝试直接从根部获取
+            if ($usedMemory === null && isset($info['used_memory'])) {
+                $usedMemory = $info['used_memory'];
+            }
+            if ($maxMemory === null && isset($info['maxmemory'])) {
+                $maxMemory = $info['maxmemory'];
+            }
+
+            // 调试信息
+            Log::debug('Redis 连接成功', [
+                'ping_success' => $pingSuccess,
+                'info_structure' => isset($info['Memory']) ? 'nested' : 'flat',
+                'used_memory' => $usedMemory ?? 'not_set',
+                'maxmemory' => $maxMemory ?? 'not_set'
+            ]);
 
             // 计算内存使用率
-            if (isset($info['used_memory'], $info['maxmemory']) && $info['maxmemory'] > 0) {
-                $memoryUsage = ($info['used_memory'] / $info['maxmemory']) * 100;
+            if ($usedMemory !== null && $maxMemory !== null && $maxMemory > 0) {
+                $memoryUsage = ($usedMemory / $maxMemory) * 100;
 
                 Log::debug('Redis内存使用情况', [
-                    'used_memory' => $info['used_memory'],
-                    'max_memory' => $info['maxmemory'],
+                    'used_memory' => $usedMemory,
+                    'max_memory' => $maxMemory,
                     'usage_percentage' => $memoryUsage
                 ]);
 
                 return round($memoryUsage, 2);
             }
 
-            // 如果没有设置maxmemory，只返回已用内存大小（字节）
-            if (isset($info['used_memory'])) {
+            // 如果没有设置maxmemory，只返回已用内存大小（MB）
+            if ($usedMemory !== null) {
+                $usedMemoryMB = round($usedMemory / 1024 / 1024, 2);
+
                 Log::debug('Redis内存使用情况（未设置最大内存）', [
-                    'used_memory_bytes' => $info['used_memory'],
-                    'used_memory_mb' => round($info['used_memory'] / 1024 / 1024, 2)
+                    'used_memory_bytes' => $usedMemory,
+                    'used_memory_mb' => $usedMemoryMB
                 ]);
 
                 // 返回已用内存的MB数作为参考值
-                return round($info['used_memory'] / 1024 / 1024, 2);
+                return $usedMemoryMB;
             }
 
             return null;
@@ -253,66 +333,34 @@ class SystemMonitorService
     /**
      * 获取MySQL健康状态
      * 
-     * @return array|null 返回内存和磁盘使用情况，null表示无法获取状态
+     * @return array|null 返回磁盘使用情况，null表示无法获取状态
      */
-    protected function getMysqlHealth(): ?array
+    protected function getMysqlHealth(): ?float
     {
         try {
-            // 基础连接检查
-            DB::select('SELECT 1');
-
-            // 获取MySQL状态和变量
-            $status = collect(DB::select("SHOW GLOBAL STATUS"))->pluck('Value', 'Variable_name');
-            $variables = collect(DB::select("SHOW GLOBAL VARIABLES"))->pluck('Value', 'Variable_name');
+            if (!$this->db) {
+                throw new \RuntimeException('数据库连接未初始化');
+            }
 
             $result = [];
+            $res = null;
 
-            // 1. 缓冲池内存使用情况
-            if ($status->has('Innodb_buffer_pool_pages_total') && $status->has('Innodb_buffer_pool_pages_free')) {
-                $totalPages = (int)$status->get('Innodb_buffer_pool_pages_total');
-                $freePages = (int)$status->get('Innodb_buffer_pool_pages_free');
-                $pageSize = (int)$variables->get('innodb_page_size', 16384); // 默认16KB
-
-                if ($totalPages > 0) {
-                    $usedPages = $totalPages - $freePages;
-                    $usageRate = ($usedPages / $totalPages) * 100;
-                    $totalMemoryMB = ($totalPages * $pageSize) / 1024 / 1024;
-                    $usedMemoryMB = ($usedPages * $pageSize) / 1024 / 1024;
-
-                    $result['buffer_pool'] = [
-                        'total_mb' => round($totalMemoryMB, 2),
-                        'used_mb' => round($usedMemoryMB, 2),
-                        'usage_percentage' => round($usageRate, 2)
-                    ];
-                }
-            }
-
-            // 2. 临时表磁盘使用情况
-            if ($status->has('Created_tmp_disk_tables') && $status->has('Created_tmp_tables')) {
-                $totalTempTables = (int)$status->get('Created_tmp_tables');
-                $diskTempTables = (int)$status->get('Created_tmp_disk_tables');
-
-                if ($totalTempTables > 0) {
-                    $diskUsageRate = ($diskTempTables / $totalTempTables) * 100;
-                    $result['temp_tables'] = [
-                        'total_created' => $totalTempTables,
-                        'disk_created' => $diskTempTables,
-                        'disk_usage_percentage' => round($diskUsageRate, 2)
-                    ];
-                }
-            }
-
-            // 3. 数据库文件大小（磁盘使用）
+            // 获取磁盘使用情况
             try {
-                $databases = DB::select("SHOW DATABASES");
+                // 获取数据目录路径
+                $variables = collect($this->db->select("SHOW GLOBAL VARIABLES WHERE Variable_name = 'datadir'"))->pluck('Value', 'Variable_name');
+                $datadir = $variables->get('datadir', '/var/lib/mysql/');
+
+                // 获取数据库文件总大小
+                $databases = $this->db->select("SHOW DATABASES");
                 $totalSize = 0;
 
-                foreach ($databases as $db) {
-                    if (!in_array($db->Database, ['information_schema', 'performance_schema', 'mysql', 'sys'])) {
-                        $tables = DB::select("SELECT 
+                foreach ($databases as $database) {
+                    if (!in_array($database->Database, ['information_schema', 'performance_schema', 'mysql', 'sys'])) {
+                        $tables = $this->db->select("SELECT 
                             SUM(data_length + index_length) as size 
                             FROM information_schema.tables 
-                            WHERE table_schema = ?", [$db->Database]);
+                            WHERE table_schema = ?", [$database->Database]);
 
                         if (isset($tables[0]->size)) {
                             $totalSize += (int)$tables[0]->size;
@@ -320,18 +368,44 @@ class SystemMonitorService
                     }
                 }
 
+                // 获取磁盘总空间和可用空间
+                if (function_exists('disk_total_space') && function_exists('disk_free_space')) {
+                    $diskTotalSpace = disk_total_space($datadir);
+                    if ($diskTotalSpace > 0) {
+                        $diskFreeSpace = disk_free_space($datadir);
+                        $diskUsedSpace = $diskTotalSpace - $diskFreeSpace;
+                        $diskUsagePercentage = ($diskUsedSpace / $diskTotalSpace) * 100;
+
+                        $result['disk_usage'] = [
+                            'total_gb' => round($diskTotalSpace / 1024 / 1024 / 1024, 2),
+                            'used_gb' => round($diskUsedSpace / 1024 / 1024 / 1024, 2),
+                            'free_gb' => round($diskFreeSpace / 1024 / 1024 / 1024, 2),
+                            'usage_percentage' => round($diskUsagePercentage, 2)
+                        ];
+
+                        $res= $result['disk_usage']['usage_percentage'];
+                    }
+                }
+
+                // 添加数据库大小信息
                 $result['database_size'] = [
                     'total_bytes' => $totalSize,
                     'total_mb' => round($totalSize / 1024 / 1024, 2),
                     'total_gb' => round($totalSize / 1024 / 1024 / 1024, 2)
                 ];
+
+                // 计算数据库文件占磁盘的百分比
+                if (isset($result['disk_usage'], $diskTotalSpace) && $diskTotalSpace > 0) {
+                    $dbUsagePercentage = ($totalSize / $diskTotalSpace) * 100;
+                    $result['database_size']['disk_usage_percentage'] = round($dbUsagePercentage, 2);
+                }
             } catch (\Exception $e) {
-                Log::warning('无法获取数据库大小信息', ['error' => $e->getMessage()]);
+                Log::warning('无法获取MySQL磁盘使用信息', ['error' => $e->getMessage()]);
             }
 
-            Log::debug('MySQL资源使用情况', $result);
+            Log::debug('MySQL磁盘使用情况', $result);
 
-            return $result;
+            return $res;
         } catch (\Exception $e) {
             Log::error('MySQL健康检查失败', ['error' => $e->getMessage()]);
             return null;
