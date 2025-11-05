@@ -95,18 +95,21 @@ class CircuitBreakerMiddleware
     protected function setCircuitState($circuitKey, $state)
     {
         $circuit = $this->getCircuitData($circuitKey);
+        $now = time();
+
         $circuit['state'] = $state;
-        $circuit['state_changed_at'] = time();
+        $circuit['state_changed_at'] = $now;
 
         if ($state === self::STATE_OPEN) {
-            $circuit['opened_at'] = time();
+            $circuit['opened_at'] = $now;
         } elseif ($state === self::STATE_CLOSED) {
-            $circuit['closed_at'] = time();
-            $circuit['failure_count'] = 0;
-            $circuit['success_count'] = 0;
+            $circuit['closed_at'] = $now;
+            // 重置计数器
+            $circuit['request_count'] = 0;
         } elseif ($state === self::STATE_HALF_OPEN) {
-            $circuit['half_opened_at'] = time();
-            $circuit['success_count'] = 0;
+            $circuit['half_opened_at'] = $now;
+            // 半开状态重置计数器，准备重新统计成功请求
+            $circuit['request_count'] = 0;
         }
 
         $this->saveCircuitData($circuitKey, $circuit);
@@ -118,8 +121,20 @@ class CircuitBreakerMiddleware
     protected function getCircuitData($circuitKey)
     {
         try {
-            $data = Cache::store('redis')->get($circuitKey);
-            return $data ? json_decode($data, true) : $this->getDefaultCircuitData();
+            $redis = Redis::connection();
+
+            // 兼容 predis 和 phpredis
+            $data = method_exists($redis, '__call')
+                ? $redis->__call('get', [$circuitKey])  // predis
+                : $redis->get($circuitKey);             // phpredis
+
+            if (is_string($data) && strlen($data) > 0) {
+                $decoded = json_decode($data, true);
+                // 如果解码失败，返回默认值
+                return is_array($decoded) ? $decoded : $this->getDefaultCircuitData();
+            }
+            // 如果没有数据，返回默认值
+            return $this->getDefaultCircuitData();
         } catch (\Exception $e) {
             Log::warning('获取熔断器数据失败，使用默认值', ['key' => $circuitKey, 'error' => $e->getMessage()]);
             return $this->getDefaultCircuitData();
@@ -132,7 +147,15 @@ class CircuitBreakerMiddleware
     protected function saveCircuitData($circuitKey, $data)
     {
         try {
-            Cache::store('redis')->put($circuitKey, json_encode($data), 3600);
+            $redis = Redis::connection();
+            $jsonData = json_encode($data);
+
+            // 兼容 predis 和 phpredis
+            if (method_exists($redis, '__call')) {
+                $redis->__call('setex', [$circuitKey, 3600, $jsonData]);  // predis
+            } else {
+                $redis->setex($circuitKey, 3600, $jsonData);              // phpredis
+            }
         } catch (\Exception $e) {
             Log::error('保存熔断器数据失败', ['key' => $circuitKey, 'error' => $e->getMessage()]);
         }
@@ -171,15 +194,17 @@ class CircuitBreakerMiddleware
         $circuit = $this->getCircuitData($circuitKey);
 
         if ($currentState === self::STATE_HALF_OPEN) {
-            $circuit['success_count'] = ($circuit['success_count'] ?? 0) + 1;
+            // 在半开状态下，使用request_count记录成功请求
+            $circuit['request_count'] = ($circuit['request_count'] ?? 0) + 1;
 
-            if ($circuit['success_count'] >= $successThreshold) {
+            // 当成功请求数达到阈值时，转为关闭状态
+            if ($circuit['request_count'] >= $successThreshold) {
                 $this->setCircuitState($circuitKey, self::STATE_CLOSED);
                 return;
             }
         } elseif ($currentState === self::STATE_CLOSED) {
-            // 重置失败计数
-            $circuit['failure_count'] = 0;
+            // 闭合状态下累加成功请求
+            $circuit['request_count'] = ($circuit['request_count'] ?? 0) + 1;
         }
 
         $this->saveCircuitData($circuitKey, $circuit);
@@ -191,17 +216,30 @@ class CircuitBreakerMiddleware
     protected function recordFailure($circuitKey, $currentState, $failureThreshold)
     {
         $circuit = $this->getCircuitData($circuitKey);
-        $circuit['failure_count'] = ($circuit['failure_count'] ?? 0) + 1;
-        $circuit['last_failure_at'] = time();
+        $now = time();
 
-        if (
-            $circuit['failure_count'] >= $failureThreshold &&
-            ($currentState === self::STATE_CLOSED || $currentState === self::STATE_HALF_OPEN)
-        ) {
+        if ($currentState === self::STATE_HALF_OPEN) {
+            // 半开状态下立即转为打开状态
             $this->setCircuitState($circuitKey, self::STATE_OPEN);
-        } else {
-            $this->saveCircuitData($circuitKey, $circuit);
+            return;
+        } elseif ($currentState === self::STATE_CLOSED) {
+            // 闭合状态下使用计数器记录失败
+            $circuit['request_count'] = ($circuit['request_count'] ?? 0) - 1;
+
+            // 计算失败数
+            $failureCount = $circuit['request_count'] <= 0 ? abs($circuit['request_count']) : 0;
+
+            // 获取配置的失败阈值
+            $failureThreshold = config('resilience.circuit_breaker.failure_threshold', 10);
+
+            // 如果请求总数大于阈值，且失败率超过配置的阈值，则触发熔断
+            if ($failureCount >= $failureThreshold) {
+                $this->setCircuitState($circuitKey, self::STATE_OPEN);
+                return;
+            }
         }
+
+        $this->saveCircuitData($circuitKey, $circuit);
     }
 
     /**

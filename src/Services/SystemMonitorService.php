@@ -383,7 +383,7 @@ class SystemMonitorService
                             'usage_percentage' => round($diskUsagePercentage, 2)
                         ];
 
-                        $res= $result['disk_usage']['usage_percentage'];
+                        $res = $result['disk_usage']['usage_percentage'];
                     }
                 }
 
@@ -426,5 +426,58 @@ class SystemMonitorService
             Log::debug('系统负载获取失败', ['error' => $e->getMessage()]);
             return null;
         }
+    }
+
+    /**
+     * 获取各资源的使用状态
+     * 返回格式：
+     * [
+     *   'cpu' => 75.5,        // CPU使用率百分比 (0-100)
+     *   'memory' => 80.2,     // 内存使用率百分比 (0-100)
+     *   'redis' => 45.3,      // Redis内存使用率百分比或使用量MB
+     *   'database' => 60.1    // 数据库磁盘使用率百分比 (0-100)
+     * ]
+     */
+    public function getResourceStatus(): array
+    {
+        $resourceStatus = [];
+
+        // CPU使用率
+        try {
+            $cpuUsage = $this->getCpuUsage();
+            $resourceStatus['cpu'] = $cpuUsage !== null ? $cpuUsage : 0;
+        } catch (\Exception $e) {
+            Log::debug('CPU使用率获取失败', ['error' => $e->getMessage()]);
+            $resourceStatus['cpu'] = 0;
+        }
+
+        // 内存使用率
+        try {
+            $memoryUsage = $this->getMemoryUsage();
+            $resourceStatus['memory'] = $memoryUsage !== null ? $memoryUsage : 0;
+        } catch (\Exception $e) {
+            Log::debug('内存使用率获取失败', ['error' => $e->getMessage()]);
+            $resourceStatus['memory'] = 0;
+        }
+
+        // Redis状态（内存使用率或使用量）
+        try {
+            $redisHealth = $this->getRedisHealth();
+            $resourceStatus['redis'] = $redisHealth !== null ? $redisHealth : 0;
+        } catch (\Exception $e) {
+            Log::debug('Redis状态获取失败', ['error' => $e->getMessage()]);
+            $resourceStatus['redis'] = 0; // 设置高值表示有问题
+        }
+
+        // 数据库状态（磁盘使用率百分比）
+        try {
+            $dbHealth = $this->getMysqlHealth();
+            $resourceStatus['database'] = $dbHealth !== null ? $dbHealth : 0;
+        } catch (\Exception $e) {
+            Log::debug('数据库状态获取失败', ['error' => $e->getMessage()]);
+            $resourceStatus['database'] = 0; // 设置高值表示有问题
+        }
+
+        return $resourceStatus;
     }
 }

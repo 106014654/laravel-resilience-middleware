@@ -5,3 +5,4 @@ composer.lock
 Thumbs.db
 .vscode/
 .idea/
+.sftp.json
