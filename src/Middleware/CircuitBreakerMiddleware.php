@@ -88,6 +88,7 @@ class CircuitBreakerMiddleware
         if ($state === self::STATE_OPEN) {
             if ($this->shouldAttemptReset($circuitKey, $recoveryTimeout)) {
                 $this->setCircuitState($circuitKey, self::STATE_HALF_OPEN);
+                $state = self::STATE_HALF_OPEN; // 同步更新状态变量
             } else {
                 return $this->buildCircuitOpenResponse($service);
             }
