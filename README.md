@@ -114,6 +114,30 @@ RESILIENCE_CPU_HIGH=85.0
 RESILIENCE_MEMORY_HIGH=85.0
 ```
 
+### 5. 验证配置
+
+使用内置命令验证配置是否正确加载：
+
+```bash
+# 检查配置状态
+php artisan resilience:config-status
+```
+
+此命令会显示：
+- ✅ 配置文件发布状态
+- ✅ 配置加载来源（用户配置 vs 默认配置）
+- ✅ 环境变量设置情况
+- ✅ 关键配置项验证
+- 💡 配置优化建议
+
+**重要说明**：为确保配置生效，请务必：
+
+1. **发布配置文件**：`php artisan vendor:publish --tag=resilience-config`
+2. **清理缓存**：`php artisan config:clear`
+3. **验证配置**：`php artisan resilience:config-status`
+
+> 💡 **配置加载机制**：系统会智能检测用户是否发布了配置文件，优先使用用户配置，缺失的配置项会自动使用默认值补充。
+
 ## 🚀 快速开始
 
 ### 1. 基础保护（推荐新手）

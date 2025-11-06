@@ -116,7 +116,7 @@ LUA;
             // 执行 Lua 脚本并获取结果
             $attempts = $this->redis->eval($luaScript, 1, $windowKey, $decayMinutes * 60);
 
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 Log::info('Fixed window rate limit check', [
                     'key' => $key,
@@ -125,7 +125,7 @@ LUA;
                     'max_attempts' => $maxAttempts
                 ]);
             }
-            
+
             return intval($attempts) > $maxAttempts;
         } catch (\Exception $e) {
             Log::warning('Redis限流失败，回退到内存限流', ['error' => $e->getMessage()]);
@@ -167,7 +167,7 @@ LUA;
                 $now . ':' . uniqid(),     // ARGV[3] 唯一标识（member）
                 $window                     // ARGV[4] 过期时间
             );
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 Log::info('Sliding window rate limit check', [
                     'key' => $key,
@@ -202,8 +202,16 @@ LUA;
             
             -- 如果桶已存在，获取当前状态
             if #bucket > 0 then
-                tokens = tonumber(bucket[2])
-                lastRefill = tonumber(bucket[4])
+                -- HGETALL 返回的是 {field1, value1, field2, value2, ...} 格式
+                -- 需要将其转换为键值对
+                local bucketData = {}
+                for i = 1, #bucket, 2 do
+                    bucketData[bucket[i]] = bucket[i + 1]
+                end
+                
+                -- 获取当前令牌数和上次补充时间
+                tokens = tonumber(bucketData['tokens']) or maxTokens
+                lastRefill = tonumber(bucketData['last_refill']) or now
                 
                 -- 计算需要补充的令牌
                 local timeDiff = now - lastRefill
@@ -213,7 +221,7 @@ LUA;
             
             -- 尝试消耗令牌
             if tokens < 1 then
-                -- 更新桶状态
+                -- 更新桶状态（令牌不足，不消耗）
                 redis.call('HMSET', KEYS[1], 'tokens', tokens, 'last_refill', now)
                 redis.call('EXPIRE', KEYS[1], ARGV[4])
                 return 0
@@ -236,6 +244,19 @@ LUA;
                 $refillRate,            // ARGV[3] 补充速率
                 $decayMinutes * 60      // ARGV[4] 过期时间
             );
+
+            // 添加详细日志记录
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
+            if ($enableDetailedLogging) {
+                Log::info('Token bucket rate limit check', [
+                    'key' => $key,
+                    'result' => $result,
+                    'max_attempts' => $maxAttempts,
+                    'refill_rate' => $refillRate,
+                    'decay_minutes' => $decayMinutes,
+                    'current_time' => $now
+                ]);
+            }
 
             return $result === 0;  // 0 表示没有令牌可用（应该限流）
         } catch (\Exception $e) {
@@ -295,7 +316,7 @@ LUA;
 
         // 根据配置决定是否记录限流触发日志
         if ($strictestFactor < 1.0) {
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 Log::info('Resource-based rate limiting triggered', [
                     'resource' => $triggeredResource,
@@ -479,7 +500,7 @@ LUA;
     protected function logRateLimitHit($key, $strategy, $maxAttempts, $decayMinutes, array $resourceStatus, array $config)
     {
         $logRateLimitHits = $config['monitoring']['log_rate_limit_hits'] ?? true;
-        $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+        $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
         if ($logRateLimitHits) {
             $logData = [
@@ -524,7 +545,7 @@ LUA;
                 'timestamp' => time()
             ];
 
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 $logData['resource_status'] = $resourceStatus;
             }
@@ -553,5 +574,48 @@ LUA;
             'resource_thresholds' => $config['resource_thresholds'] ?? [],
             'timestamp' => time()
         ];
+    }
+
+    /**
+     * 调试令牌桶状态
+     * 
+     * 获取指定key的令牌桶当前状态，用于调试
+     * 
+     * @param string $key 令牌桶的键
+     * @return array 令牌桶状态信息
+     */
+    public function debugTokenBucket($key)
+    {
+        try {
+            $bucket = $this->redis->hgetall($key);
+            $now = time();
+
+            $bucketData = [];
+            if (!empty($bucket)) {
+                // 如果是关联数组格式
+                if (is_array($bucket) && !empty($bucket)) {
+                    foreach ($bucket as $field => $value) {
+                        $bucketData[$field] = $value;
+                    }
+                }
+            }
+
+            return [
+                'key' => $key,
+                'exists' => !empty($bucket),
+                'raw_data' => $bucket,
+                'parsed_data' => $bucketData,
+                'current_tokens' => $bucketData['tokens'] ?? 'not_set',
+                'last_refill' => $bucketData['last_refill'] ?? 'not_set',
+                'current_time' => $now,
+                'time_diff' => isset($bucketData['last_refill']) ? $now - (int)$bucketData['last_refill'] : 'unknown'
+            ];
+        } catch (\Exception $e) {
+            return [
+                'key' => $key,
+                'error' => $e->getMessage(),
+                'current_time' => time()
+            ];
+        }
     }
 }

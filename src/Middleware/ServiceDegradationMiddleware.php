@@ -508,7 +508,7 @@ class ServiceDegradationMiddleware
         cache(['heavy_analytics_disabled' => true], now()->addMinutes(10));
 
         $config = config('resilience.service_degradation', []);
-        $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+        $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
         if ($enableDetailedLogging) {
             Log::info('Heavy analytics disabled due to system pressure');
         }
@@ -1053,7 +1053,7 @@ class ServiceDegradationMiddleware
         // 包括：禁用功能、设置标志、调整配置等
         if (isset($strategy['actions'])) {
             $config = config('resilience.service_degradation', []);
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
             if ($enableDetailedLogging) {
                 Log::debug("Executing actions for resource: {$resource}", [
@@ -1768,7 +1768,7 @@ class ServiceDegradationMiddleware
         $logResourceMonitoring = $config['monitoring']['log_resource_monitoring'] ?? false;
 
         if ($logResourceMonitoring) {
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
             $logData = [
                 'event' => 'resource_monitoring',
@@ -1802,7 +1802,7 @@ class ServiceDegradationMiddleware
         $logDegradationEvents = $config['monitoring']['log_degradation_events'] ?? true;
 
         if ($logDegradationEvents) {
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
             $logData = [
                 'event' => 'service_degradation_activated',
@@ -1838,7 +1838,7 @@ class ServiceDegradationMiddleware
         $logRecoveryEvents = $config['monitoring']['log_recovery_events'] ?? true;
 
         if ($logRecoveryEvents) {
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
             $logData = [
                 'event' => 'service_recovery',
@@ -1882,7 +1882,7 @@ class ServiceDegradationMiddleware
                 'timestamp' => time()
             ];
 
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 $logData['strategy_details'] = $strategy;
                 $logData['actions'] = $strategy['actions'] ?? [];

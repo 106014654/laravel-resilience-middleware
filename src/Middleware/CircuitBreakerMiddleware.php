@@ -57,17 +57,17 @@ class CircuitBreakerMiddleware
     {
         // 从配置文件获取默认参数
         $config = config('resilience.circuit_breaker', []);
-        $failureThreshold = $failureThreshold ?? $config['sliding_window']['failure_threshold'] ?? 50;
+        $failureThreshold = $failureThreshold ?? $config['failure_threshold'] ?? 50;
         $recoveryTimeout = $recoveryTimeout ?? $config['recovery_timeout'] ?? 60;
         $successThreshold = $successThreshold ?? $config['success_threshold'] ?? 3;
-        $windowSize = $windowSize ?? $config['sliding_window']['window_size'] ?? 60;
-        $minRequestCount = $minRequestCount ?? $config['sliding_window']['min_request_count'] ?? 10;
+        $windowSize = $windowSize ?? $config['window_size'] ?? 60;
+        $minRequestCount = $minRequestCount ?? $config['min_request_count'] ?? 10;
 
         $circuitKey = $this->getCircuitKey($service, $request);
         $state = $this->getCircuitState($circuitKey);
 
         // 根据配置决定是否记录详细日志
-        $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+        $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
         if ($enableDetailedLogging) {
             Log::info("Circuit Breaker State for {$service}: {$state}", [
                 'circuit_key' => $circuitKey,
@@ -104,13 +104,13 @@ class CircuitBreakerMiddleware
 
             // 检查响应是否成功
             if ($this->isSuccessResponse($response, $responseTime)) {
-                $this->recordSuccess($circuitKey, $state, $successThreshold, $windowSize, $config);
+                $this->recordSuccess($circuitKey, $state, $successThreshold);
             } else {
-                $this->recordFailure($circuitKey, $state, $failureThreshold, $windowSize, $minRequestCount, $config);
+                $this->recordFailure($circuitKey, $state, $failureThreshold, $minRequestCount);
             }
             return $response;
         } catch (\Exception $e) {
-            $this->recordFailure($circuitKey, $state, $failureThreshold, $windowSize, $minRequestCount, $config);
+            $this->recordFailure($circuitKey, $state, $failureThreshold, $minRequestCount);
             throw $e;
         }
     }
@@ -409,7 +409,7 @@ class CircuitBreakerMiddleware
      * @param int $windowSize 滑动窗口大小（秒）
      * @param array $config 配置数组
      */
-    protected function recordSuccess($circuitKey, $currentState, $successThreshold, $windowSize, $config = [])
+    protected function recordSuccess($circuitKey, $currentState, $successThreshold)
     {
         $circuit = $this->getCircuitData($circuitKey);
         $currentTime = time();
@@ -436,7 +436,7 @@ class CircuitBreakerMiddleware
                     $recentSuccessCount++;
                 }
             }
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 Log::info("Half-open state success tracking", [
                     'circuit_key' => $circuitKey,
@@ -448,7 +448,7 @@ class CircuitBreakerMiddleware
 
             // 当成功请求数达到阈值时，转为关闭状态
             if ($recentSuccessCount >= $successThreshold) {
-                $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+                $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
                 if ($enableDetailedLogging) {
                     Log::info("Success threshold reached in half-open state", [
                         'circuit_key' => $circuitKey,
@@ -456,24 +456,13 @@ class CircuitBreakerMiddleware
                         'success_threshold' => $successThreshold
                     ]);
                 }
-                
+
                 $this->setCircuitState($circuitKey, self::STATE_CLOSED);
                 return;
             }
         }
 
         $this->saveCircuitData($circuitKey, $circuit);
-
-        // 根据配置决定是否记录成功请求日志
-        $logSuccess = $config['monitoring']['log_success_requests'] ?? false;
-        if ($logSuccess) {
-            $stats = $this->calculateWindowStats($circuit['sliding_window']);
-            Log::info("Success recorded in sliding window", [
-                'circuit_key' => $circuitKey,
-                'state' => $currentState,
-                'window_stats' => $stats
-            ]);
-        }
     }
 
     /**
@@ -488,7 +477,7 @@ class CircuitBreakerMiddleware
      * @param int $minRequestCount 最小请求数，低于此数不触发熔断
      * @param array $config 配置数组
      */
-    protected function recordFailure($circuitKey, $currentState, $failureThreshold, $windowSize, $minRequestCount, $config = [])
+    protected function recordFailure($circuitKey, $currentState, $failureThreshold, $minRequestCount)
     {
         $circuit = $this->getCircuitData($circuitKey);
         $currentTime = time();
@@ -518,7 +507,7 @@ class CircuitBreakerMiddleware
             // 闭合状态下分析滑动窗口数据决定是否熔断
             $stats = $this->calculateWindowStats($circuit['sliding_window']);
 
-            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
             if ($enableDetailedLogging) {
                 Log::info("Sliding window stats for failure analysis", [
                     'circuit_key' => $circuitKey,
@@ -536,7 +525,7 @@ class CircuitBreakerMiddleware
                 $stats['total_requests'] >= $minRequestCount &&
                 ($stats['failure_rate'] * 100) >= $failureThreshold
             ) {
-                $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+                $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
                 if ($enableDetailedLogging) {
                     Log::warning("Circuit breaker opening: failure rate threshold exceeded", [
                         'circuit_key' => $circuitKey,

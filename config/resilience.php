@@ -36,6 +36,17 @@ return [
         'database' => [
             'connection' => env('RESILIENCE_DB_CONNECTION', 'mysql'), // 数据库连接名称
         ],
+        /*
+        | 监控和日志配置
+        */
+        'monitoring' => [
+            'enable_detailed_logging' => env('RESILIENCE_RL_DETAILED_LOG', true), // 是否启用详细日志
+            'log_rate_limit_hits' => env('RESILIENCE_RL_LOG_HITS', true),         // 是否记录限流命中事件
+            'log_allowed_requests' => env('RESILIENCE_RL_LOG_ALLOWED', false),     // 是否记录允许通过的请求
+            'metrics_collection' => env('RESILIENCE_RL_METRICS', true),           // 是否收集限流指标
+        ],
+
+
     ],
 
     /*
@@ -50,15 +61,6 @@ return [
         */
         'enabled' => env('RESILIENCE_RATE_LIMITING_ENABLED', true),
 
-        /*
-        | 监控和日志配置
-        */
-        'monitoring' => [
-            'enable_detailed_logging' => env('RESILIENCE_RL_DETAILED_LOG', false), // 是否启用详细日志
-            'log_rate_limit_hits' => env('RESILIENCE_RL_LOG_HITS', true),         // 是否记录限流命中事件
-            'log_allowed_requests' => env('RESILIENCE_RL_LOG_ALLOWED', false),     // 是否记录允许通过的请求
-            'metrics_collection' => env('RESILIENCE_RL_METRICS', true),           // 是否收集限流指标
-        ],
 
         // 单项资源阈值限流策略（独立资源监控模式）
         'resource_thresholds' => [
@@ -106,39 +108,15 @@ return [
         | 响应时间阈值配置
         */
         'max_response_time' => env('RESILIENCE_CB_MAX_RESPONSE_TIME', 5000), // 最大响应时间（毫秒），超过视为失败
-
-        /*
-        | 滑动窗口配置
-        */
-        'sliding_window' => [
-            'window_size' => env('RESILIENCE_CB_WINDOW_SIZE', 60),           // 滑动窗口大小（秒）
-            'min_request_count' => env('RESILIENCE_CB_MIN_REQUESTS', 10),    // 最小请求数，低于此数不触发熔断
-            'failure_threshold' => env('RESILIENCE_CB_FAILURE_THRESHOLD', 50), // 失败率阈值（百分比），如50表示50%
-        ],
-
         /*
         | 熔断器状态配置
         */
         'recovery_timeout' => env('RESILIENCE_CB_RECOVERY_TIMEOUT', 60),     // 熔断后的恢复等待时间（秒）
         'success_threshold' => env('RESILIENCE_CB_SUCCESS_THRESHOLD', 3),    // 半开状态下的成功阈值，连续成功此数量后关闭熔断器
+        'window_size' => env('RESILIENCE_CB_WINDOW_SIZE', 60),           // 滑动窗口大小（秒）
+        'min_request_count' => env('RESILIENCE_CB_MIN_REQUESTS', 10),    // 最小请求数，低于此数不触发熔断
+        'failure_threshold' => env('RESILIENCE_CB_FAILURE_THRESHOLD', 50), // 失败率阈值（百分比），如50表示50%
 
-        /*
-        | 数据管理配置
-        */
-        'data_retention' => [
-            'max_window_records' => 1000,  // 单个熔断器最大保留的滑动窗口记录数
-            'cleanup_interval' => 300,     // 数据清理间隔（秒）
-            'circuit_data_ttl' => 3600,    // 熔断器数据在Redis中的TTL（秒）
-        ],
-
-        /*
-        | 监控和日志配置
-        */
-        'monitoring' => [
-            'enable_detailed_logging' => env('RESILIENCE_CB_DETAILED_LOG', false), // 是否启用详细日志
-            'log_success_requests' => env('RESILIENCE_CB_LOG_SUCCESS', false),     // 是否记录成功请求
-            'health_check_interval' => env('RESILIENCE_CB_HEALTH_CHECK', 30),      // 健康检查间隔（秒）
-        ],
     ],
 
     /*
