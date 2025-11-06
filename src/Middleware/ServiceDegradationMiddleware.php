@@ -30,13 +30,19 @@ class ServiceDegradationMiddleware
      */
     public function handle(Request $request, Closure $next, $mode = 'auto')
     {
+        // 获取配置
+        $config = config('resilience.service_degradation', []);
+
         // 检查是否启用服务降级
-        if (!config('resilience.service_degradation.enabled', true)) {
+        if (!($config['enabled'] ?? true)) {
             return $next($request);
         }
 
         // 获取当前系统资源状态
         $resourceStatus = $this->systemMonitor->getResourceStatus();
+
+        // 记录资源监控数据（如果启用）
+        $this->logResourceMonitoring($resourceStatus, $config);
 
         // 计算需要的降级级别
         $requiredDegradationLevel = $this->calculateDegradationLevel($resourceStatus);
@@ -49,13 +55,8 @@ class ServiceDegradationMiddleware
             // 执行降级策略
             $this->executeDegradationStrategy($requiredDegradationLevel, $resourceStatus, $request);
 
-            Log::info('Service degradation activated', [
-                'route' => $request->route() ? $request->route()->getName() : null,
-                'degradation_level' => $requiredDegradationLevel,
-                'resource_status' => $resourceStatus,
-                'mode' => $mode,
-                'ip' => $request->ip()
-            ]);
+            // 记录降级事件（如果启用）
+            $this->logDegradationEvent($request, $requiredDegradationLevel, $resourceStatus, $mode, $config);
 
             // 根据模式和降级级别决定处理方式
             if ($mode === 'block' || ($mode === 'auto' && $requiredDegradationLevel >= 3)) {
@@ -506,7 +507,11 @@ class ServiceDegradationMiddleware
         // 缓存标志，避免重复检查
         cache(['heavy_analytics_disabled' => true], now()->addMinutes(10));
 
-        Log::info('Heavy analytics disabled due to system pressure');
+        $config = config('resilience.service_degradation', []);
+        $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+        if ($enableDetailedLogging) {
+            Log::info('Heavy analytics disabled due to system pressure');
+        }
     }
 
     protected function reduceLogVerbosity(): void
@@ -1040,14 +1045,22 @@ class ServiceDegradationMiddleware
      */
     protected function executeResourceStrategy(string $resource, array $strategy, Request $request): void
     {
+        // 记录策略执行详情（如果启用）
+        $this->logStrategyExecution($resource, $strategy, $request);
+
         // 第1层：执行即时响应动作（Actions Layer）
         // 这些是最快速、最直接的降级措施，通常在毫秒级生效
         // 包括：禁用功能、设置标志、调整配置等
         if (isset($strategy['actions'])) {
-            Log::debug("Executing actions for resource: {$resource}", [
-                'actions' => $strategy['actions'],
-                'resource_type' => $resource
-            ]);
+            $config = config('resilience.service_degradation', []);
+            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+
+            if ($enableDetailedLogging) {
+                Log::debug("Executing actions for resource: {$resource}", [
+                    'actions' => $strategy['actions'],
+                    'resource_type' => $resource
+                ]);
+            }
             $this->executeActions($strategy['actions'], $request);
         }
 
@@ -1310,16 +1323,13 @@ class ServiceDegradationMiddleware
             // 执行恢复动作
             $this->executeRecoveryActions($currentLevel, $newLevel);
 
-            // 如果恢复成功，重置恢复尝试计数
+            // 如果恢复成功，重置恢复尝试计数并记录恢复事件
             if ($newLevel === 0) {
                 $this->performImmediateRecovery();
                 cache(['recovery_attempts_count' => 0], now()->addHour());
-                Log::info('Complete recovery successful, attempts counter reset');
+                $this->logRecoveryEvent($currentLevel, $newLevel, $resourceStatus, 'complete');
             } else {
-                Log::info('Partial recovery successful', [
-                    'new_level' => $newLevel,
-                    'attempts_used' => $recoveryAttempts
-                ]);
+                $this->logRecoveryEvent($currentLevel, $newLevel, $resourceStatus, 'gradual');
             }
         } catch (\Exception $e) {
             // 恢复失败，记录失败时间
@@ -1744,6 +1754,141 @@ class ServiceDegradationMiddleware
             case 'static_fallback_only':
                 config(['database.fallback' => 'static']);
                 break;
+        }
+    }
+
+    /**
+     * 记录资源监控数据
+     * 
+     * @param array $resourceStatus 资源状态
+     * @param array $config 配置数组
+     */
+    protected function logResourceMonitoring(array $resourceStatus, array $config)
+    {
+        $logResourceMonitoring = $config['monitoring']['log_resource_monitoring'] ?? false;
+
+        if ($logResourceMonitoring) {
+            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+
+            $logData = [
+                'event' => 'resource_monitoring',
+                'timestamp' => time()
+            ];
+
+            if ($enableDetailedLogging) {
+                $logData['resource_status'] = $resourceStatus;
+                $logData['thresholds'] = $config['resource_thresholds'] ?? [];
+            } else {
+                // 只记录关键资源状态
+                $logData['cpu_usage'] = $resourceStatus['cpu'] ?? 0;
+                $logData['memory_usage'] = $resourceStatus['memory'] ?? 0;
+            }
+
+            Log::info('Resource monitoring data', $logData);
+        }
+    }
+
+    /**
+     * 记录降级事件
+     * 
+     * @param Request $request 请求对象
+     * @param int $level 降级级别
+     * @param array $resourceStatus 资源状态
+     * @param string $mode 降级模式
+     * @param array $config 配置数组
+     */
+    protected function logDegradationEvent(Request $request, int $level, array $resourceStatus, string $mode, array $config)
+    {
+        $logDegradationEvents = $config['monitoring']['log_degradation_events'] ?? true;
+
+        if ($logDegradationEvents) {
+            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+
+            $logData = [
+                'event' => 'service_degradation_activated',
+                'degradation_level' => $level,
+                'mode' => $mode,
+                'route' => $request->route() ? $request->route()->getName() : null,
+                'ip' => $request->ip(),
+                'timestamp' => time()
+            ];
+
+            if ($enableDetailedLogging) {
+                $logData['resource_status'] = $resourceStatus;
+                $logData['request_path'] = $request->path();
+                $logData['request_method'] = $request->method();
+                $logData['user_agent'] = $request->userAgent();
+            }
+
+            Log::warning('Service degradation activated', $logData);
+        }
+    }
+
+    /**
+     * 记录恢复事件
+     * 
+     * @param int $fromLevel 原降级级别
+     * @param int $toLevel 目标降级级别
+     * @param array $resourceStatus 资源状态
+     * @param string $recoveryType 恢复类型
+     */
+    protected function logRecoveryEvent(int $fromLevel, int $toLevel, array $resourceStatus, string $recoveryType = 'gradual')
+    {
+        $config = config('resilience.service_degradation', []);
+        $logRecoveryEvents = $config['monitoring']['log_recovery_events'] ?? true;
+
+        if ($logRecoveryEvents) {
+            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+
+            $logData = [
+                'event' => 'service_recovery',
+                'from_level' => $fromLevel,
+                'to_level' => $toLevel,
+                'recovery_type' => $recoveryType,
+                'timestamp' => time()
+            ];
+
+            if ($enableDetailedLogging) {
+                $logData['resource_status'] = $resourceStatus;
+            }
+
+            if ($toLevel === 0) {
+                Log::info('Service fully recovered', $logData);
+            } else {
+                Log::info('Service partially recovered', $logData);
+            }
+        }
+    }
+
+    /**
+     * 记录策略执行详情
+     * 
+     * @param string $resource 资源类型
+     * @param array $strategy 策略配置
+     * @param Request $request 请求对象
+     */
+    protected function logStrategyExecution(string $resource, array $strategy, Request $request)
+    {
+        $config = config('resilience.service_degradation', []);
+        $logStrategyExecution = $config['monitoring']['log_strategy_execution'] ?? false;
+
+        if ($logStrategyExecution) {
+            $logData = [
+                'event' => 'strategy_execution',
+                'resource' => $resource,
+                'level' => $strategy['level'] ?? 'unknown',
+                'actions_count' => isset($strategy['actions']) ? count($strategy['actions']) : 0,
+                'request_path' => $request->path(),
+                'timestamp' => time()
+            ];
+
+            $enableDetailedLogging = $config['monitoring']['enable_detailed_logging'] ?? false;
+            if ($enableDetailedLogging) {
+                $logData['strategy_details'] = $strategy;
+                $logData['actions'] = $strategy['actions'] ?? [];
+            }
+
+            Log::info('Degradation strategy executed', $logData);
         }
     }
 }

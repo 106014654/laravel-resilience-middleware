@@ -79,49 +79,6 @@ class SystemMonitorService
         ];
     }
 
-    /**
-     * 获取系统压力级别
-     *
-     * @return string low|medium|high|critical
-     */
-    public function getSystemPressureLevel(): string
-    {
-        $health = $this->getSystemHealth();
-        $weights = $this->config['pressure_weights'] ?? [
-            'cpu' => 0.4,
-            'memory' => 0.3,
-            'redis' => 0.2,
-            'mysql' => 0.1
-        ];
-
-        $totalScore = 0;
-        $totalWeight = 0;
-
-        foreach ($weights as $metric => $weight) {
-            if (isset($health[$metric]) && is_numeric($health[$metric])) {
-                $totalScore += $health[$metric] * $weight;
-                $totalWeight += $weight;
-            }
-        }
-
-        $averageScore = $totalWeight > 0 ? $totalScore / $totalWeight : 0;
-
-        $thresholds = $this->config['cpu']['thresholds'] ?? [
-            'medium' => 70,
-            'high' => 85,
-            'critical' => 95
-        ];
-
-        if ($averageScore >= $thresholds['critical']) {
-            return 'critical';
-        } elseif ($averageScore >= $thresholds['high']) {
-            return 'high';
-        } elseif ($averageScore >= $thresholds['medium']) {
-            return 'medium';
-        }
-
-        return 'low';
-    }
 
     private function getCpuUsage(): ?float
     {
@@ -289,35 +246,16 @@ class SystemMonitorService
                 $maxMemory = $info['maxmemory'];
             }
 
-            // 调试信息
-            Log::debug('Redis 连接成功', [
-                'ping_success' => $pingSuccess,
-                'info_structure' => isset($info['Memory']) ? 'nested' : 'flat',
-                'used_memory' => $usedMemory ?? 'not_set',
-                'maxmemory' => $maxMemory ?? 'not_set'
-            ]);
-
             // 计算内存使用率
             if ($usedMemory !== null && $maxMemory !== null && $maxMemory > 0) {
                 $memoryUsage = ($usedMemory / $maxMemory) * 100;
-
-                Log::debug('Redis内存使用情况', [
-                    'used_memory' => $usedMemory,
-                    'max_memory' => $maxMemory,
-                    'usage_percentage' => $memoryUsage
-                ]);
 
                 return round($memoryUsage, 2);
             }
 
             // 如果没有设置maxmemory，只返回已用内存大小（MB）
             if ($usedMemory !== null) {
-                $usedMemoryMB = round($usedMemory / 1024 / 1024, 2);
-
-                Log::debug('Redis内存使用情况（未设置最大内存）', [
-                    'used_memory_bytes' => $usedMemory,
-                    'used_memory_mb' => $usedMemoryMB
-                ]);
+                $usedMemoryMB = round($usedMemory / 1024 / 1024, 2);;
 
                 // 返回已用内存的MB数作为参考值
                 return $usedMemoryMB;
@@ -402,8 +340,6 @@ class SystemMonitorService
             } catch (\Exception $e) {
                 Log::warning('无法获取MySQL磁盘使用信息', ['error' => $e->getMessage()]);
             }
-
-            Log::debug('MySQL磁盘使用情况', $result);
 
             return $res;
         } catch (\Exception $e) {

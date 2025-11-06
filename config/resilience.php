@@ -23,61 +23,18 @@ return [
         'redis_connection_timeout' => env('RESILIENCE_REDIS_CONNECTION_TIMEOUT', 2),
         'mysql_connection_timeout' => env('RESILIENCE_MYSQL_CONNECTION_TIMEOUT', 3),
         /*
-        | CPU 监控配置（本地服务器）
-        */
-        'cpu' => [
-            'enabled' => env('RESILIENCE_CPU_MONITOR', true),
-            'thresholds' => [
-                'medium' => env('RESILIENCE_CPU_MEDIUM', 70.0),    // CPU使用率70%触发中等压力
-                'high' => env('RESILIENCE_CPU_HIGH', 85.0),        // CPU使用率85%触发高压力  
-                'critical' => env('RESILIENCE_CPU_CRITICAL', 95.0), // CPU使用率95%触发临界压力
-            ],
-        ],
-
-        /*
-        | 内存监控配置（本地服务器）
-        */
-        'memory' => [
-            'enabled' => env('RESILIENCE_MEMORY_MONITOR', true),
-            'thresholds' => [
-                'medium' => env('RESILIENCE_MEMORY_MEDIUM', 70.0),    // 内存使用率70%
-                'high' => env('RESILIENCE_MEMORY_HIGH', 85.0),        // 内存使用率85%
-                'critical' => env('RESILIENCE_MEMORY_CRITICAL', 95.0), // 内存使用率95%
-            ],
-        ],
-
         /*
         | Redis 监控配置（可能为远程服务器）
         */
         'redis' => [
-            'enabled' => env('RESILIENCE_REDIS_MONITOR', true),
             'connection' => env('RESILIENCE_REDIS_CONNECTION', 'default'), // Redis连接名称
-            'thresholds' => [
-                'medium' => env('RESILIENCE_REDIS_MEDIUM', 70.0),    // Redis内存使用率70%
-                'high' => env('RESILIENCE_REDIS_HIGH', 85.0),        // Redis内存使用率85%
-                'critical' => env('RESILIENCE_REDIS_CRITICAL', 95.0), // Redis内存使用率95%
-            ],
         ],
 
         /*
         | 数据库监控配置（可能为远程服务器）
         */
         'database' => [
-            'enabled' => env('RESILIENCE_DB_MONITOR', true),
             'connection' => env('RESILIENCE_DB_CONNECTION', 'mysql'), // 数据库连接名称
-            'thresholds' => [
-                'medium' => env('RESILIENCE_DB_MEDIUM', 70.0),    // 数据库磁盘使用率70%
-                'high' => env('RESILIENCE_DB_HIGH', 85.0),        // 数据库磁盘使用率85%
-                'critical' => env('RESILIENCE_DB_CRITICAL', 95.0), // 数据库磁盘使用率95%
-            ],
-        ],
-
-        // 系统压力等级权重配置（用于计算综合压力等级）
-        'pressure_weights' => [
-            'cpu' => 0.4,       // CPU权重40%
-            'memory' => 0.3,     // 内存权重30%
-            'redis' => 0.2,      // Redis权重20%
-            'mysql' => 0.1,      // MySQL权重10%
         ],
     ],
 
@@ -88,6 +45,20 @@ return [
     | 基于系统资源使用情况的自适应限流策略
     */
     'rate_limiting' => [
+        /*
+        | 基础配置
+        */
+        'enabled' => env('RESILIENCE_RATE_LIMITING_ENABLED', true),
+
+        /*
+        | 监控和日志配置
+        */
+        'monitoring' => [
+            'enable_detailed_logging' => env('RESILIENCE_RL_DETAILED_LOG', false), // 是否启用详细日志
+            'log_rate_limit_hits' => env('RESILIENCE_RL_LOG_HITS', true),         // 是否记录限流命中事件
+            'log_allowed_requests' => env('RESILIENCE_RL_LOG_ALLOWED', false),     // 是否记录允许通过的请求
+            'metrics_collection' => env('RESILIENCE_RL_METRICS', true),           // 是否收集限流指标
+        ],
 
         // 单项资源阈值限流策略（独立资源监控模式）
         'resource_thresholds' => [
@@ -122,10 +93,52 @@ return [
     |--------------------------------------------------------------------------
     | 熔断器中间件配置
     |--------------------------------------------------------------------------
+    | 基于滑动窗口的智能熔断器，提供更精确的失败率统计和熔断控制
+    | 
+    | 工作原理：
+    | 1. 使用滑动时间窗口记录所有请求（成功/失败）
+    | 2. 实时计算窗口内的失败率
+    | 3. 当失败率超过阈值且请求数满足最小要求时触发熔断
+    | 4. 熔断后进入恢复周期，逐步恢复服务
     */
     'circuit_breaker' => [
-        'failure_threshold' => env('RESILIENCE_CB_FAILURE_THRESHOLD', 10),
-        'max_response_time' => env('RESILIENCE_CB_MAX_RESPONSE_TIME', 5000), // ms
+        /*
+        | 响应时间阈值配置
+        */
+        'max_response_time' => env('RESILIENCE_CB_MAX_RESPONSE_TIME', 5000), // 最大响应时间（毫秒），超过视为失败
+
+        /*
+        | 滑动窗口配置
+        */
+        'sliding_window' => [
+            'window_size' => env('RESILIENCE_CB_WINDOW_SIZE', 60),           // 滑动窗口大小（秒）
+            'min_request_count' => env('RESILIENCE_CB_MIN_REQUESTS', 10),    // 最小请求数，低于此数不触发熔断
+            'failure_threshold' => env('RESILIENCE_CB_FAILURE_THRESHOLD', 50), // 失败率阈值（百分比），如50表示50%
+        ],
+
+        /*
+        | 熔断器状态配置
+        */
+        'recovery_timeout' => env('RESILIENCE_CB_RECOVERY_TIMEOUT', 60),     // 熔断后的恢复等待时间（秒）
+        'success_threshold' => env('RESILIENCE_CB_SUCCESS_THRESHOLD', 3),    // 半开状态下的成功阈值，连续成功此数量后关闭熔断器
+
+        /*
+        | 数据管理配置
+        */
+        'data_retention' => [
+            'max_window_records' => 1000,  // 单个熔断器最大保留的滑动窗口记录数
+            'cleanup_interval' => 300,     // 数据清理间隔（秒）
+            'circuit_data_ttl' => 3600,    // 熔断器数据在Redis中的TTL（秒）
+        ],
+
+        /*
+        | 监控和日志配置
+        */
+        'monitoring' => [
+            'enable_detailed_logging' => env('RESILIENCE_CB_DETAILED_LOG', false), // 是否启用详细日志
+            'log_success_requests' => env('RESILIENCE_CB_LOG_SUCCESS', false),     // 是否记录成功请求
+            'health_check_interval' => env('RESILIENCE_CB_HEALTH_CHECK', 30),      // 健康检查间隔（秒）
+        ],
     ],
 
     /*
@@ -138,6 +151,18 @@ return [
     'service_degradation' => [
         // 基础配置
         'enabled' => env('RESILIENCE_DEGRADATION_ENABLED', true),
+
+        /*
+        | 监控和日志配置
+        */
+        'monitoring' => [
+            'enable_detailed_logging' => env('RESILIENCE_SD_DETAILED_LOG', false), // 是否启用详细日志
+            'log_degradation_events' => env('RESILIENCE_SD_LOG_EVENTS', true),     // 是否记录降级事件
+            'log_recovery_events' => env('RESILIENCE_SD_LOG_RECOVERY', true),      // 是否记录恢复事件  
+            'log_strategy_execution' => env('RESILIENCE_SD_LOG_STRATEGY', false),  // 是否记录策略执行详情
+            'log_resource_monitoring' => env('RESILIENCE_SD_LOG_RESOURCE', false), // 是否记录资源监控数据
+            'metrics_collection' => env('RESILIENCE_SD_METRICS', true),           // 是否收集降级指标
+        ],
 
         /*
         |--------------------------------------------------------------------------
@@ -257,9 +282,9 @@ return [
 
                     ],
                     'fallback_strategies' => [],
-                    'database_strategies'=>[
-                        'query_strategy'=> 'no_database_access' , // 数据库查询不可用
-                        'cache_strategy'=> 'mandatory_caching' , // 强制缓存所有查询
+                    'database_strategies' => [
+                        'query_strategy' => 'no_database_access', // 数据库查询不可用
+                        'cache_strategy' => 'mandatory_caching', // 强制缓存所有查询
                     ]
                 ],
             ],
@@ -299,9 +324,7 @@ return [
         |--------------------------------------------------------------------------
         | 当系统压力过大时，这些路径的请求会被标记为非必要请求可能被拒绝
         */
-        'non_essential_paths' => [
-          
-        ],
+        'non_essential_paths' => [],
 
     ],
 ];
