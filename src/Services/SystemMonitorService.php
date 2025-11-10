@@ -416,4 +416,42 @@ class SystemMonitorService
 
         return $resourceStatus;
     }
+
+    /**
+     * 获取系统压力等级
+     * 基于资源使用情况返回压力级别字符串
+     * 
+     * @return string 压力等级 (low|elevated|medium|high|critical)
+     */
+    public function getSystemPressureLevel(): string
+    {
+        $resourceStatus = $this->getResourceStatus();
+        $thresholds = config('resilience.service_degradation.resource_thresholds', []);
+
+        $maxLevel = 0;
+        foreach ($resourceStatus as $resource => $usage) {
+            if (!isset($thresholds[$resource])) {
+                continue;
+            }
+
+            foreach ($thresholds[$resource] as $threshold => $level) {
+                if ($usage >= $threshold) {
+                    $maxLevel = max($maxLevel, $level);
+                }
+            }
+        }
+
+        switch ($maxLevel) {
+            case 4:
+                return 'critical';
+            case 3:
+                return 'high';
+            case 2:
+                return 'medium';
+            case 1:
+                return 'elevated';
+            default:
+                return 'low';
+        }
+    }
 }

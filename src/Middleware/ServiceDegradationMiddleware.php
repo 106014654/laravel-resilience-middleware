@@ -15,9 +15,14 @@ class ServiceDegradationMiddleware
 {
     protected $systemMonitor;
 
+    protected $config;
+
     public function __construct(SystemMonitorService $systemMonitor)
     {
         $this->systemMonitor = $systemMonitor;
+
+        // 加载服务降级配置（包含监控和日志配置）
+        $this->config = config('resilience.service_degradation', []);
     }
 
     /**
@@ -44,27 +49,28 @@ class ServiceDegradationMiddleware
         // 记录资源监控数据（如果启用）
         $this->logResourceMonitoring($resourceStatus, $config);
 
-        // 计算需要的降级级别
-        $requiredDegradationLevel = $this->calculateDegradationLevel($resourceStatus);
-
+        // 计算需要的降级级别和具体的资源策略
+        $degradationInfo = $this->calculateDegradationInfo($resourceStatus);
+        $maxDegradationLevel = $degradationInfo['max_level'];
+        
         // 检查恢复条件
         $this->checkRecoveryConditions($resourceStatus);
 
         // 如果需要降级
-        if ($requiredDegradationLevel > 0) {
-            // 执行降级策略
-            $this->executeDegradationStrategy($requiredDegradationLevel, $resourceStatus, $request);
+        if ($maxDegradationLevel > 0) {
+            // 执行降级策略 - 传入完整的降级信息
+            $this->executeDegradationStrategy($degradationInfo, $resourceStatus, $request);
 
             // 记录降级事件（如果启用）
-            $this->logDegradationEvent($request, $requiredDegradationLevel, $resourceStatus, $mode, $config);
+            $this->logDegradationEvent($request, $maxDegradationLevel, $resourceStatus, $mode);
 
             // 根据模式和降级级别决定处理方式
-            if ($mode === 'block' || ($mode === 'auto' && $requiredDegradationLevel >= 3)) {
+            if ($mode === 'block' || ($mode === 'auto' && $maxDegradationLevel >= 3)) {
                 // 阻塞模式或高级别降级：直接返回降级响应
-                return $this->createDegradedResponse($requiredDegradationLevel);
+                return $this->createDegradedResponse($maxDegradationLevel);
             } else {
                 // 透传模式：设置降级标识，继续执行后续逻辑
-                $this->setDegradationContext($request, $requiredDegradationLevel, $resourceStatus);
+                $this->setDegradationContext($request, $maxDegradationLevel, $resourceStatus);
             }
         }
 
@@ -961,55 +967,128 @@ class ServiceDegradationMiddleware
     // ========== 核心降级逻辑实现 ==========
 
     /**
-     * 计算所需的降级级别
+     * 计算降级信息 - 返回每个资源的详细降级信息
+     * 
+     * @param array $resourceStatus 资源状态
+     * @return array 包含max_level和resource_strategies的数组
      */
-    protected function calculateDegradationLevel(array $resourceStatus): int
+    protected function calculateDegradationInfo(array $resourceStatus): array
     {
-        $maxLevel = 0;
         $thresholds = config('resilience.service_degradation.resource_thresholds', []);
+        $strategies = config('resilience.service_degradation.strategies', []);
+        $maxLevel = 0;
+        $resourceStrategies = [];
 
         foreach ($resourceStatus as $resource => $usage) {
             if (!isset($thresholds[$resource])) {
                 continue;
             }
 
+            $resourceLevel = 0;
+            $resourceStrategy = null;
+
+            // 找到该资源应该触发的最高级别
             foreach ($thresholds[$resource] as $threshold => $level) {
                 if ($usage >= $threshold) {
-                    $maxLevel = max($maxLevel, $level);
+                    $resourceLevel = max($resourceLevel, $level);
+                }
+            }
+
+            if ($resourceLevel > 0) {
+                $maxLevel = max($maxLevel, $resourceLevel);
+                
+                // 找到对应的策略配置
+                if (isset($strategies[$resource])) {
+                    foreach ($strategies[$resource] as $threshold => $strategy) {
+                        if ($usage >= $threshold && ($strategy['level'] ?? 0) === $resourceLevel) {
+                            $resourceStrategy = $strategy;
+                            break;
+                        }
+                    }
+                }
+
+                if ($resourceStrategy) {
+                    $resourceStrategies[$resource] = [
+                        'level' => $resourceLevel,
+                        'usage' => $usage,
+                        'strategy' => $resourceStrategy,
+                        'threshold_triggered' => $threshold ?? 0
+                    ];
                 }
             }
         }
 
-        return $maxLevel;
+        return [
+            'max_level' => $maxLevel,
+            'resource_strategies' => $resourceStrategies,
+            'total_affected_resources' => count($resourceStrategies)
+        ];
     }
 
     /**
-     * 执行降级策略
+     * 计算降级级别 - 保持向后兼容性
+     * 
+     * @param array $resourceStatus
+     * @return int
      */
-    protected function executeDegradationStrategy(int $level, array $resourceStatus, Request $request): void
+    protected function calculateDegradationLevel(array $resourceStatus): int
     {
-        $strategies = config('resilience.service_degradation.strategies', []);
+        $degradationInfo = $this->calculateDegradationInfo($resourceStatus);
+        return $degradationInfo['max_level'];
+    }
 
-        foreach ($resourceStatus as $resource => $usage) {
-            if (!isset($strategies[$resource])) {
-                continue;
-            }
-
-            // 找到对应的策略配置
-            $resourceStrategies = $strategies[$resource];
-            foreach ($resourceStrategies as $threshold => $strategy) {
-                if ($usage >= $threshold && ($strategy['level'] ?? 0) === $level) {
-                    $this->executeResourceStrategy($resource, $strategy, $request);
-                    break;
-                }
-            }
+    /**
+     * 执行降级策略 - 新版本：支持多资源并行降级
+     */
+    protected function executeDegradationStrategy($degradationInfo, array $resourceStatus, Request $request): void
+    {
+        // 如果是旧版本调用（传入的是int），转换为新格式
+        if (is_int($degradationInfo)) {
+            $level = $degradationInfo;
+            $degradationInfo = $this->calculateDegradationInfo($resourceStatus);
+            Log::warning('Using legacy executeDegradationStrategy call', ['level' => $level]);
         }
 
-        // 记录当前降级级别
-        cache(['current_degradation_level' => $level], now()->addMinutes(30));
+        $resourceStrategies = $degradationInfo['resource_strategies'];
+        $maxLevel = $degradationInfo['max_level'];
+        $executedActions = [];
 
-        Log::warning('Service degradation strategy executed', [
-            'level' => $level,
+        // 执行每个有问题资源的降级策略
+        foreach ($resourceStrategies as $resource => $info) {
+            $this->executeResourceStrategy($resource, $info['strategy'], $request);
+            
+            // 收集已执行的actions，避免重复执行
+            if (isset($info['strategy']['actions'])) {
+                $executedActions = array_merge($executedActions, $info['strategy']['actions']);
+            }
+
+            Log::info("Resource degradation strategy applied", [
+                'resource' => $resource,
+                'level' => $info['level'],
+                'usage' => $info['usage'],
+                'threshold' => $info['threshold_triggered'],
+                'actions_count' => count($info['strategy']['actions'] ?? [])
+            ]);
+        }
+
+        // 记录当前降级状态 - 保存详细信息
+        $degradationState = [
+            'max_level' => $maxLevel,
+            'affected_resources' => array_keys($resourceStrategies),
+            'resource_details' => $resourceStrategies,
+            'executed_actions' => array_unique($executedActions),
+            'timestamp' => now()->timestamp
+        ];
+
+        cache(['current_degradation_state' => $degradationState], now()->addMinutes(30));
+        // 保持向后兼容性
+        cache(['current_degradation_level' => $maxLevel], now()->addMinutes(30));
+
+        Log::warning('Multi-resource degradation strategy executed', [
+            'max_level' => $maxLevel,
+            'affected_resources_count' => count($resourceStrategies),
+            'affected_resources' => array_keys($resourceStrategies),
+            'total_actions' => count(array_unique($executedActions)),
             'resource_status' => $resourceStatus,
             'request_path' => $request->path(),
         ]);
@@ -1122,13 +1201,14 @@ class ServiceDegradationMiddleware
     }
 
     /**
-     * 检查恢复条件
+     * 检查恢复条件 - 新版本：支持多资源恢复检查
      */
     protected function checkRecoveryConditions(array $resourceStatus): void
     {
+        $currentDegradationState = cache('current_degradation_state', null);
         $currentLevel = cache('current_degradation_level', 0);
 
-        if ($currentLevel <= 0) {
+        if ($currentLevel <= 0 || !$currentDegradationState) {
             return; // 没有降级，无需恢复
         }
 
@@ -1157,22 +1237,214 @@ class ServiceDegradationMiddleware
             }
         }
 
-        // 检查是否满足恢复条件
-        if ($this->canRecover($resourceStatus, $currentLevel, $recoveryThreshold)) {
+        // 检查每个资源的恢复条件
+        $recoverableResources = $this->checkResourceRecoveryConditions(
+            $resourceStatus, 
+            $currentDegradationState, 
+            $recoveryThreshold
+        );
+
+        if (!empty($recoverableResources)) {
             // 检查恢复验证时间 - 确保系统在低负载状态下稳定运行足够时间
             if (!$this->validateRecoveryStability($resourceStatus, $recoveryValidationTime)) {
                 Log::info('Recovery validation failed, system not stable enough', [
                     'validation_time' => $recoveryValidationTime,
-                    'resource_status' => $resourceStatus
+                    'resource_status' => $resourceStatus,
+                    'recoverable_resources' => array_keys($recoverableResources)
                 ]);
                 return;
             }
 
             if ($gradualRecovery) {
-                $this->performGradualRecovery($currentLevel, $resourceStatus);
+                $this->performGradualResourceRecovery($recoverableResources, $resourceStatus);
             } else {
                 $this->performImmediateRecovery();
             }
+        }
+    }
+
+    /**
+     * 检查各个资源的恢复条件
+     * 
+     * @param array $resourceStatus 当前资源状态
+     * @param array $currentDegradationState 当前降级状态
+     * @param int $buffer 恢复缓冲区
+     * @return array 可恢复的资源列表
+     */
+    protected function checkResourceRecoveryConditions(array $resourceStatus, array $currentDegradationState, int $buffer): array
+    {
+        $thresholds = config('resilience.service_degradation.resource_thresholds', []);
+        $recoverableResources = [];
+
+        foreach ($currentDegradationState['resource_details'] as $resource => $degradationInfo) {
+            $currentUsage = $resourceStatus[$resource] ?? 0;
+            $degradationLevel = $degradationInfo['level'];
+
+            if (!isset($thresholds[$resource])) {
+                continue;
+            }
+
+            // 检查该资源是否可以从当前级别恢复
+            $canRecover = true;
+            foreach ($thresholds[$resource] as $threshold => $level) {
+                if ($level === $degradationLevel) {
+                    // 资源使用率需要低于触发阈值减去缓冲区
+                    if ($currentUsage >= ($threshold - $buffer)) {
+                        $canRecover = false;
+                        break;
+                    }
+                }
+            }
+
+            if ($canRecover) {
+                $recoverableResources[$resource] = [
+                    'current_usage' => $currentUsage,
+                    'degradation_info' => $degradationInfo,
+                    'recovery_target_level' => max(0, $degradationLevel - 1)
+                ];
+            }
+        }
+
+        return $recoverableResources;
+    }
+
+    /**
+     * 执行渐进式多资源恢复
+     * 
+     * @param array $recoverableResources 可恢复的资源列表
+     * @param array $resourceStatus 当前资源状态
+     */
+    protected function performGradualResourceRecovery(array $recoverableResources, array $resourceStatus): void
+    {
+        $lastRecoveryAttempt = cache('last_recovery_attempt', 0);
+        $recoveryInterval = config('resilience.service_degradation.recovery.recovery_step_interval', 30);
+
+        // 检查恢复间隔
+        if (now()->timestamp - $lastRecoveryAttempt < $recoveryInterval) {
+            return; // 还未到恢复时间
+        }
+
+        // 增加恢复尝试计数
+        $recoveryAttempts = cache('recovery_attempts_count', 0);
+        $recoveryAttempts++;
+        cache(['recovery_attempts_count' => $recoveryAttempts], now()->addHour());
+
+        $currentDegradationState = cache('current_degradation_state', []);
+        $recoveredResources = [];
+
+        try {
+            foreach ($recoverableResources as $resource => $recoveryInfo) {
+                $currentLevel = $recoveryInfo['degradation_info']['level'];
+                $targetLevel = $recoveryInfo['recovery_target_level'];
+
+                // 执行该资源的恢复动作
+                $this->executeResourceRecovery($resource, $currentLevel, $targetLevel);
+                
+                $recoveredResources[$resource] = [
+                    'from_level' => $currentLevel,
+                    'to_level' => $targetLevel,
+                    'usage' => $recoveryInfo['current_usage']
+                ];
+
+                Log::info("Resource recovery executed", [
+                    'resource' => $resource,
+                    'from_level' => $currentLevel,
+                    'to_level' => $targetLevel,
+                    'usage' => $recoveryInfo['current_usage'],
+                    'attempt' => $recoveryAttempts
+                ]);
+            }
+
+            // 更新降级状态
+            $this->updateDegradationStateAfterRecovery($recoveredResources, $resourceStatus);
+
+            cache(['last_recovery_attempt' => now()->timestamp], now()->addHour());
+
+            // 如果所有资源都恢复到0级别，执行完整恢复
+            $newDegradationState = cache('current_degradation_state', []);
+            if (empty($newDegradationState['resource_details'])) {
+                $this->performImmediateRecovery();
+                cache(['recovery_attempts_count' => 0], now()->addHour());
+            }
+
+            Log::info('Multi-resource gradual recovery completed', [
+                'recovered_resources' => array_keys($recoveredResources),
+                'recovery_details' => $recoveredResources,
+                'attempt' => $recoveryAttempts
+            ]);
+
+        } catch (\Exception $e) {
+            // 恢复失败，记录失败时间
+            cache(['last_failed_recovery_time' => now()->timestamp], now()->addHours(2));
+
+            Log::error('Multi-resource recovery attempt failed', [
+                'recoverable_resources' => array_keys($recoverableResources),
+                'attempt_number' => $recoveryAttempts,
+                'error' => $e->getMessage(),
+                'resource_status' => $resourceStatus
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * 执行单个资源的恢复
+     */
+    protected function executeResourceRecovery(string $resource, int $fromLevel, int $toLevel): void
+    {
+        $strategies = config('resilience.service_degradation.strategies', []);
+        
+        if (!isset($strategies[$resource])) {
+            return;
+        }
+
+        // 找到需要恢复的策略
+        foreach ($strategies[$resource] as $threshold => $strategy) {
+            if (($strategy['level'] ?? 0) === $fromLevel) {
+                $this->executeResourceRecoveryActions($resource, $strategy, $fromLevel);
+                break;
+            }
+        }
+    }
+
+    /**
+     * 更新降级状态（移除已恢复的资源）
+     */
+    protected function updateDegradationStateAfterRecovery(array $recoveredResources, array $resourceStatus): void
+    {
+        $currentState = cache('current_degradation_state', []);
+        
+        if (empty($currentState)) {
+            return;
+        }
+
+        // 移除已完全恢复的资源
+        foreach ($recoveredResources as $resource => $recoveryInfo) {
+            if ($recoveryInfo['to_level'] === 0) {
+                unset($currentState['resource_details'][$resource]);
+            } else {
+                // 更新资源的降级级别
+                $currentState['resource_details'][$resource]['level'] = $recoveryInfo['to_level'];
+            }
+        }
+
+        // 重新计算最大级别
+        $newMaxLevel = 0;
+        foreach ($currentState['resource_details'] as $resource => $details) {
+            $newMaxLevel = max($newMaxLevel, $details['level']);
+        }
+
+        $currentState['max_level'] = $newMaxLevel;
+        $currentState['affected_resources'] = array_keys($currentState['resource_details']);
+
+        // 更新缓存
+        if (empty($currentState['resource_details'])) {
+            cache()->forget('current_degradation_state');
+            cache()->forget('current_degradation_level');
+        } else {
+            cache(['current_degradation_state' => $currentState], now()->addMinutes(30));
+            cache(['current_degradation_level' => $newMaxLevel], now()->addMinutes(30));
         }
     }
 
@@ -1407,64 +1679,82 @@ class ServiceDegradationMiddleware
     }
 
     /**
-     * 执行恢复动作
+     * 执行恢复动作 - 基于配置文件中的策略和实际降级状态
+     * 
+     * 该方法根据配置文件中定义的策略来恢复降级措施，而不是硬编码的恢复逻辑。
+     * 它会检查每个resource的策略配置，确定在指定级别下应该恢复哪些actions。
      */
     protected function executeRecoveryActions(int $fromLevel, int $toLevel): void
     {
-        // 根据恢复级别执行相应的恢复动作
-        if ($fromLevel >= 4 && $toLevel < 4) {
-            // 从紧急降级恢复
-            config([
-                'processing.mode' => 'normal',
-                'routes.enabled' => null,
-            ]);
+        $strategies = config('resilience.service_degradation.strategies', []);
+        $recoveredActions = [];
 
-            Log::info('Recovered from emergency degradation');
+        // 遍历所有资源策略，找到需要恢复的actions
+        foreach ($strategies as $resource => $resourceStrategies) {
+            foreach ($resourceStrategies as $threshold => $strategy) {
+                $strategyLevel = $strategy['level'] ?? 0;
+
+                // 如果策略级别在恢复范围内，执行恢复
+                if ($strategyLevel <= $fromLevel && $strategyLevel > $toLevel) {
+                    $this->executeResourceRecoveryActions($resource, $strategy, $strategyLevel);
+
+                    // 记录已恢复的actions以便日志
+                    if (isset($strategy['actions'])) {
+                        $recoveredActions = array_merge($recoveredActions, $strategy['actions']);
+                    }
+                }
+            }
         }
 
-        if ($fromLevel >= 3 && $toLevel < 3) {
-            // 从重度降级恢复
-            config([
-                'response.static_only' => false,
-                'cache.strategy' => 'normal',
-            ]);
+        // 记录恢复日志
+        Log::info('Recovery actions executed based on configuration', [
+            'from_level' => $fromLevel,
+            'to_level' => $toLevel,
+            'recovered_actions' => array_unique($recoveredActions),
+            'strategies_checked' => count($strategies)
+        ]);
+    }
 
-            app()->instance('static_responses_only', false);
-
-            Log::info('Recovered from heavy degradation');
+    /**
+     * 执行特定资源的恢复actions
+     * 
+     * @param string $resource 资源类型 (cpu|memory|redis|mysql)
+     * @param array $strategy 策略配置
+     * @param int $level 恢复的级别
+     */
+    protected function executeResourceRecoveryActions(string $resource, array $strategy, int $level): void
+    {
+        // 执行actions的恢复
+        if (isset($strategy['actions'])) {
+            $this->recoverActions($strategy['actions'], $resource, $level);
         }
 
-        if ($fromLevel >= 2 && $toLevel < 2) {
-            // 从中度降级恢复
-            config([
-                'websockets.enabled' => true,
-                'broadcasting.enabled' => true,
-                'realtime.features' => true,
-            ]);
-
-            cache()->forget('realtime_disabled');
-
-            app()->instance('recommendations.disabled', false);
-
-            Log::info('Recovered from moderate degradation');
+        // 恢复性能优化设置
+        if (isset($strategy['performance_optimizations'])) {
+            $this->recoverPerformanceOptimizations($strategy['performance_optimizations'], $resource, $level);
         }
 
-        if ($fromLevel >= 1 && $toLevel < 1) {
-            // 从轻度降级恢复
-            config([
-                'analytics.heavy_processing' => true,
-                'app.debug' => env('APP_DEBUG', false),
-                'logging.level' => env('LOG_LEVEL', 'debug'),
-            ]);
-
-            cache()->forget('heavy_analytics_disabled');
-            cache()->forget('log_verbosity_reduced');
-            cache()->forget('background_jobs_disabled');
-
-            app()->instance('analytics.heavy.disabled', false);
-
-            Log::info('Recovered from light degradation');
+        // 恢复内存管理设置
+        if (isset($strategy['memory_management'])) {
+            $this->recoverMemoryManagement($strategy['memory_management'], $resource, $level);
         }
+
+        // 恢复后备策略
+        if (isset($strategy['fallback_strategies'])) {
+            $this->recoverFallbackStrategies($strategy['fallback_strategies'], $resource, $level);
+        }
+
+        // 恢复数据库策略
+        if (isset($strategy['database_strategies'])) {
+            $this->recoverDatabaseStrategies($strategy['database_strategies'], $resource, $level);
+        }
+
+        Log::debug("Resource recovery actions executed", [
+            'resource' => $resource,
+            'level' => $level,
+            'actions_count' => count($strategy['actions'] ?? []),
+            'timestamp' => now()
+        ]);
     }
 
     /**
@@ -1761,15 +2051,16 @@ class ServiceDegradationMiddleware
      * 记录资源监控数据
      * 
      * @param array $resourceStatus 资源状态
-     * @param array $config 配置数组
+     * @param array $config 配置数组（可选）
      */
-    protected function logResourceMonitoring(array $resourceStatus, array $config)
+    protected function logResourceMonitoring(array $resourceStatus, array $config = [])
     {
-        $logResourceMonitoring = $config['monitoring']['log_resource_monitoring'] ?? false;
+        // 使用传入的配置或者实例配置
+        $serviceConfig = $config ?: $this->config;
+        $enableDetailedLogging = $serviceConfig['monitoring']['enable_detailed_logging'] ?? false;
+        $enableResourceMonitoringLog = $serviceConfig['monitoring']['log_resource_monitoring'] ?? false;
 
-        if ($logResourceMonitoring) {
-            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
-
+        if ($enableDetailedLogging || $enableResourceMonitoringLog) {
             $logData = [
                 'event' => 'resource_monitoring',
                 'timestamp' => time()
@@ -1777,7 +2068,7 @@ class ServiceDegradationMiddleware
 
             if ($enableDetailedLogging) {
                 $logData['resource_status'] = $resourceStatus;
-                $logData['thresholds'] = $config['resource_thresholds'] ?? [];
+                $logData['thresholds'] = $serviceConfig['resource_thresholds'] ?? [];
             } else {
                 // 只记录关键资源状态
                 $logData['cpu_usage'] = $resourceStatus['cpu'] ?? 0;
@@ -1797,13 +2088,11 @@ class ServiceDegradationMiddleware
      * @param string $mode 降级模式
      * @param array $config 配置数组
      */
-    protected function logDegradationEvent(Request $request, int $level, array $resourceStatus, string $mode, array $config)
+    protected function logDegradationEvent(Request $request, int $level, array $resourceStatus, string $mode)
     {
-        $logDegradationEvents = $config['monitoring']['log_degradation_events'] ?? true;
+        $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
-        if ($logDegradationEvents) {
-            $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
-
+        if ($enableDetailedLogging) {
             $logData = [
                 'event' => 'service_degradation_activated',
                 'degradation_level' => $level,
@@ -1889,6 +2178,234 @@ class ServiceDegradationMiddleware
             }
 
             Log::info('Degradation strategy executed', $logData);
+        }
+    }
+
+    // ========== 恢复方法实现 ==========
+
+    /**
+     * 恢复 actions - 基于配置和实际降级标识状态
+     * 
+     * @param array $actions 需要恢复的actions列表
+     * @param string $resource 资源类型
+     * @param int $level 恢复的级别
+     */
+    protected function recoverActions(array $actions, string $resource, int $level): void
+    {
+        foreach ($actions as $action) {
+            switch ($action) {
+                // CPU 相关actions恢复
+                case 'disable_heavy_analytics':
+                    if (cache('heavy_analytics_disabled')) {
+                        config(['analytics.heavy_processing' => true]);
+                        app()->instance('analytics.heavy.disabled', false);
+                        cache()->forget('heavy_analytics_disabled');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'reduce_log_verbosity':
+                    if (cache('log_verbosity_reduced')) {
+                        config([
+                            'logging.level' => env('LOG_LEVEL', 'debug'),
+                            'app.debug' => env('APP_DEBUG', false)
+                        ]);
+                        cache()->forget('log_verbosity_reduced');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'disable_background_jobs':
+                    if (cache('background_jobs_disabled')) {
+                        cache()->forget('background_jobs_disabled');
+                        config(['queue.connections.default.delay' => 0]);
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'disable_recommendations_engine':
+                    if (cache('recommendations_disabled')) {
+                        app()->instance('recommendations.disabled', false);
+                        cache()->forget('recommendations_disabled');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'disable_real_time_features':
+                    if (cache('realtime_disabled')) {
+                        config([
+                            'websockets.enabled' => true,
+                            'broadcasting.enabled' => true,
+                            'realtime.features' => true,
+                        ]);
+                        cache()->forget('realtime_disabled');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'static_responses_only':
+                    if (app()->bound('static_responses_only')) {
+                        config(['response.static_only' => false]);
+                        app()->instance('static_responses_only', false);
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                // Memory 相关actions恢复
+                case 'disable_file_processing':
+                    if (app()->bound('file_processing_disabled')) {
+                        config([
+                            'filesystems.uploads_enabled' => true,
+                            'image.processing' => true,
+                            'file.processing' => true,
+                        ]);
+                        app()->instance('file_processing_disabled', false);
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                // Redis 相关actions恢复
+                case 'reduce_redis_operations':
+                    if (cache('redis_operations_reduced')) {
+                        cache()->forget('redis_operations_reduced');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'redis_read_only_mode':
+                    if (cache('redis_read_only')) {
+                        config(['database.redis.read_only' => false]);
+                        cache()->forget('redis_read_only');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'complete_redis_bypass':
+                    if (app()->bound('redis.bypassed')) {
+                        config(['cache.default' => env('CACHE_DRIVER', 'redis')]);
+                        app()->instance('redis.bypassed', false);
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                // Database 相关actions恢复
+                case 'enable_read_only_mode':
+                    if (cache('database_read_only')) {
+                        config(['database.read_only' => false]);
+                        cache()->forget('database_read_only');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                case 'disable_complex_queries':
+                    if (cache('complex_queries_disabled')) {
+                        config(['database.complex_queries_disabled' => false]);
+                        cache()->forget('complex_queries_disabled');
+                        Log::info("Recovered: {$action} for {$resource} at level {$level}");
+                    }
+                    break;
+
+                default:
+                    Log::debug("Recovery action not implemented: {$action} for {$resource}");
+                    break;
+            }
+        }
+    }
+
+    /**
+     * 恢复性能优化设置
+     */
+    protected function recoverPerformanceOptimizations(array $optimizations, string $resource, int $level): void
+    {
+        foreach ($optimizations as $key => $value) {
+            switch ($key) {
+                case 'cache_strategy':
+                    config(['cache.strategy' => 'normal']);
+                    Log::debug("Recovered performance optimization: {$key} for {$resource}");
+                    break;
+
+                case 'query_timeout':
+                    $defaultTimeout = 30;
+                    config(['database.connections.mysql.options.timeout' => $defaultTimeout]);
+                    Log::debug("Recovered performance optimization: {$key} for {$resource}");
+                    break;
+
+                case 'processing':
+                    config(['processing.mode' => 'normal']);
+                    Log::debug("Recovered performance optimization: {$key} for {$resource}");
+                    break;
+            }
+        }
+    }
+
+    /**
+     * 恢复内存管理设置
+     */
+    protected function recoverMemoryManagement(array $management, string $resource, int $level): void
+    {
+        foreach ($management as $key => $value) {
+            switch ($key) {
+                case 'cache_cleanup':
+                    // 内存管理的cache_cleanup通常不需要"恢复"，因为它是一次性动作
+                    Log::debug("Memory management cache_cleanup noted for {$resource}");
+                    break;
+
+                case 'object_pooling':
+                    config(['object_pooling.enabled' => false]);
+                    Log::debug("Recovered memory management: {$key} for {$resource}");
+                    break;
+            }
+        }
+    }
+
+    /**
+     * 恢复后备策略
+     */
+    protected function recoverFallbackStrategies(array $strategies, string $resource, int $level): void
+    {
+        foreach ($strategies as $key => $value) {
+            switch ($key) {
+                case 'cache_backend':
+                    config(['cache.default' => env('CACHE_DRIVER', 'file')]);
+                    Log::debug("Recovered fallback strategy: {$key} for {$resource}");
+                    break;
+
+                case 'session_storage':
+                    config(['session.driver' => env('SESSION_DRIVER', 'file')]);
+                    Log::debug("Recovered fallback strategy: {$key} for {$resource}");
+                    break;
+            }
+        }
+    }
+
+    /**
+     * 恢复数据库策略
+     */
+    protected function recoverDatabaseStrategies(array $strategies, string $resource, int $level): void
+    {
+        foreach ($strategies as $key => $value) {
+            switch ($key) {
+                case 'connection_strategy':
+                    config(['database.read_preference' => 'primary']);
+                    Log::debug("Recovered database strategy: {$key} for {$resource}");
+                    break;
+
+                case 'query_strategy':
+                    config([
+                        'database.complex_queries' => true,
+                        'database.access' => true
+                    ]);
+                    Log::debug("Recovered database strategy: {$key} for {$resource}");
+                    break;
+
+                case 'cache_strategy':
+                    config([
+                        'database.force_cache' => false,
+                        'database.cache_all' => false
+                    ]);
+                    Log::debug("Recovered database strategy: {$key} for {$resource}");
+                    break;
+            }
         }
     }
 }
