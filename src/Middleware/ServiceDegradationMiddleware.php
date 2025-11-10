@@ -52,7 +52,7 @@ class ServiceDegradationMiddleware
         // 计算需要的降级级别和具体的资源策略
         $degradationInfo = $this->calculateDegradationInfo($resourceStatus);
         $maxDegradationLevel = $degradationInfo['max_level'];
-        
+
         // 检查恢复条件
         $this->checkRecoveryConditions($resourceStatus);
 
@@ -639,7 +639,7 @@ class ServiceDegradationMiddleware
         $tagsToReduce = ['temp', 'analytics', 'reports'];
         foreach ($tagsToReduce as $tag) {
             if (rand(1, 100) <= $percentage * 100) {
-                cache()->tags($tag)->flush();
+                $this->flushCacheWithTags([$tag]);
             }
         }
 
@@ -699,7 +699,7 @@ class ServiceDegradationMiddleware
         $nonCriticalTags = ['analytics', 'recommendations', 'reports', 'temp', 'widgets'];
 
         foreach ($nonCriticalTags as $tag) {
-            cache()->tags($tag)->flush();
+            $this->flushCacheWithTags([$tag]);
         }
 
         Log::info('Non-critical cache cleared');
@@ -996,7 +996,7 @@ class ServiceDegradationMiddleware
 
             if ($resourceLevel > 0) {
                 $maxLevel = max($maxLevel, $resourceLevel);
-                
+
                 // 找到对应的策略配置
                 if (isset($strategies[$resource])) {
                     foreach ($strategies[$resource] as $threshold => $strategy) {
@@ -1056,7 +1056,7 @@ class ServiceDegradationMiddleware
         // 执行每个有问题资源的降级策略
         foreach ($resourceStrategies as $resource => $info) {
             $this->executeResourceStrategy($resource, $info['strategy'], $request);
-            
+
             // 收集已执行的actions，避免重复执行
             if (isset($info['strategy']['actions'])) {
                 $executedActions = array_merge($executedActions, $info['strategy']['actions']);
@@ -1239,8 +1239,8 @@ class ServiceDegradationMiddleware
 
         // 检查每个资源的恢复条件
         $recoverableResources = $this->checkResourceRecoveryConditions(
-            $resourceStatus, 
-            $currentDegradationState, 
+            $resourceStatus,
+            $currentDegradationState,
             $recoveryThreshold
         );
 
@@ -1339,7 +1339,7 @@ class ServiceDegradationMiddleware
 
                 // 执行该资源的恢复动作
                 $this->executeResourceRecovery($resource, $currentLevel, $targetLevel);
-                
+
                 $recoveredResources[$resource] = [
                     'from_level' => $currentLevel,
                     'to_level' => $targetLevel,
@@ -1372,7 +1372,6 @@ class ServiceDegradationMiddleware
                 'recovery_details' => $recoveredResources,
                 'attempt' => $recoveryAttempts
             ]);
-
         } catch (\Exception $e) {
             // 恢复失败，记录失败时间
             cache(['last_failed_recovery_time' => now()->timestamp], now()->addHours(2));
@@ -1394,7 +1393,7 @@ class ServiceDegradationMiddleware
     protected function executeResourceRecovery(string $resource, int $fromLevel, int $toLevel): void
     {
         $strategies = config('resilience.service_degradation.strategies', []);
-        
+
         if (!isset($strategies[$resource])) {
             return;
         }
@@ -1414,7 +1413,7 @@ class ServiceDegradationMiddleware
     protected function updateDegradationStateAfterRecovery(array $recoveredResources, array $resourceStatus): void
     {
         $currentState = cache('current_degradation_state', []);
-        
+
         if (empty($currentState)) {
             return;
         }
@@ -1837,10 +1836,10 @@ class ServiceDegradationMiddleware
     {
         switch ($type) {
             case 'non_essential':
-                cache()->tags(['temp', 'analytics'])->flush();
+                $this->flushCacheWithTags(['temp', 'analytics']);
                 break;
             case 'aggressive':
-                cache()->tags(['temp', 'analytics', 'reports'])->flush();
+                $this->flushCacheWithTags(['temp', 'analytics', 'reports']);
                 break;
             case 'emergency':
                 cache()->flush();
@@ -1851,6 +1850,146 @@ class ServiceDegradationMiddleware
                     opcache_reset();
                 }
                 break;
+        }
+    }
+
+    /**
+     * 安全地清理带标签的缓存
+     * 
+     * 检查当前缓存驱动是否支持标签功能，如果不支持则使用特定键名清理
+     * 
+     * @param array $tags 要清理的缓存标签
+     */
+    protected function flushCacheWithTags(array $tags): void
+    {
+        try {
+            // 检查缓存驱动是否支持标签
+            $cacheStore = cache()->getStore();
+            $cacheDriver = config('cache.default');
+            $tagSupportDrivers = config('resilience.service_degradation.cache.tag_support_drivers', ['redis', 'memcached', 'array']);
+
+            // Redis、Memcached 等驱动支持标签
+            if (in_array($cacheDriver, $tagSupportDrivers) && method_exists($cacheStore, 'tags')) {
+                cache()->tags($tags)->flush();
+                return;
+            }
+
+            // 不支持标签的驱动，检查是否启用模式清理
+            $enablePatternCleanup = config('resilience.service_degradation.cache.enable_pattern_cleanup', true);
+            if ($enablePatternCleanup) {
+                $this->flushCacheByKeyPatterns($tags);
+            }
+        } catch (\Exception $e) {
+            // 如果标签清理失败，记录日志并使用全局清理作为后备方案
+            Log::warning('Tagged cache cleanup failed, checking fallback options', [
+                'tags' => $tags,
+                'error' => $e->getMessage(),
+                'cache_driver' => config('cache.default')
+            ]);
+
+            // 后备方案：清理所有缓存（谨慎使用）
+            $allowGlobalFallback = config('resilience.service_degradation.cache.fallback_to_global_flush', false);
+            if ($allowGlobalFallback) {
+                Log::warning('Falling back to global cache flush - this may impact performance');
+                cache()->flush();
+            } else {
+                Log::info('Global cache fallback disabled, attempting known key cleanup');
+                // 尝试清理已知键作为最后的后备方案
+                foreach ($tags as $tag) {
+                    $this->flushKnownKeys($tag);
+                }
+            }
+        }
+    }
+
+    /**
+     * 根据键名模式清理缓存
+     * 
+     * 对于不支持标签的缓存驱动，通过键名模式来清理特定缓存
+     * 
+     * @param array $tags 标签列表，用于构造键名模式
+     */
+    protected function flushCacheByKeyPatterns(array $tags): void
+    {
+        // 为每个标签定义可能的键名模式
+        $keyPatterns = [
+            'temp' => ['temp:*', 'temporary:*', 'cache:temp:*'],
+            'analytics' => ['analytics:*', 'stats:*', 'metrics:*'],
+            'reports' => ['reports:*', 'report:*', 'export:*'],
+            'widgets' => ['widgets:*', 'widget:*', 'dashboard:*'],
+            'recommendations' => ['recommendations:*', 'suggest:*']
+        ];
+
+        foreach ($tags as $tag) {
+            if (!isset($keyPatterns[$tag])) {
+                continue;
+            }
+
+            foreach ($keyPatterns[$tag] as $pattern) {
+                // 尝试使用Redis的键名模式删除（如果是Redis驱动）
+                if (config('cache.default') === 'redis') {
+                    try {
+                        $cacheStore = cache()->getStore();
+                        // 检查是否是Redis缓存存储
+                        if ($cacheStore instanceof \Illuminate\Cache\RedisStore) {
+                            $redis = $cacheStore->connection();
+                            $keys = $redis->keys($pattern);
+                            if (!empty($keys)) {
+                                $redis->del($keys);
+                            }
+                        }
+                    } catch (\Exception $e) {
+                        Log::debug('Redis pattern deletion failed', [
+                            'pattern' => $pattern,
+                            'error' => $e->getMessage()
+                        ]);
+                    }
+                } else {
+                    // 对于其他驱动，尝试删除已知的具体键名
+                    $this->flushKnownKeys($tag);
+                }
+            }
+        }
+    }
+
+    /**
+     * 清理已知的缓存键
+     * 
+     * 当无法使用标签或模式匹配时，清理预定义的具体缓存键
+     * 
+     * @param string $tag 标签名
+     */
+    protected function flushKnownKeys(string $tag): void
+    {
+        $knownKeys = [
+            'temp' => [
+                'temp_data',
+                'temporary_cache',
+                'temp_results',
+                'cache_temp_analytics',
+                'temp_user_data'
+            ],
+            'analytics' => [
+                'analytics_data',
+                'user_analytics',
+                'page_views',
+                'analytics_summary',
+                'stats_cache',
+                'metrics_data'
+            ],
+            'reports' => [
+                'reports_cache',
+                'monthly_report',
+                'daily_stats',
+                'report_data',
+                'export_cache'
+            ]
+        ];
+
+        if (isset($knownKeys[$tag])) {
+            foreach ($knownKeys[$tag] as $key) {
+                cache()->forget($key);
+            }
         }
     }
 
