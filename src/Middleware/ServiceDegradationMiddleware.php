@@ -1453,7 +1453,7 @@ class ServiceDegradationMiddleware
             ]);
         } catch (\Exception $e) {
             // 恢复失败，记录失败时间
-            app('cache')->put('last_failed_recovery_time', now()->timestamp, now()->addHours(2));
+            $this->putDegradationState('last_failed_recovery_time', now()->timestamp, now()->addHours(2));
 
             Log::error('Multi-resource recovery attempt failed', [
                 'recoverable_resources' => array_keys($recoverableResources),
@@ -1601,7 +1601,7 @@ class ServiceDegradationMiddleware
         }
 
         // 检查在验证时间窗口内，系统资源是否持续稳定
-        $currentLevel = app('cache')->get('current_degradation_level') ?? 0;
+        $currentLevel = $this->getDegradationState('current_degradation_level', 0);
         $thresholds = config('resilience.service_degradation.resource_thresholds', []);
         $recoveryBuffer = config('resilience.service_degradation.recovery.recovery_threshold_buffer', 5);
 
@@ -1654,9 +1654,9 @@ class ServiceDegradationMiddleware
         $newLevel = max(0, $currentLevel - 1);
 
         // 增加恢复尝试计数
-        $recoveryAttempts = app('cache')->get('recovery_attempts_count') ?? 0;
+        $recoveryAttempts = $this->getDegradationState('recovery_attempts_count', 0);
         $recoveryAttempts++;
-        app('cache')->put('recovery_attempts_count', $recoveryAttempts, now()->addHour());
+        $this->putDegradationState('recovery_attempts_count', $recoveryAttempts, now()->addHour());
 
         Log::info('Gradual recovery initiated', [
             'from_level' => $currentLevel,
@@ -1667,8 +1667,8 @@ class ServiceDegradationMiddleware
 
         try {
             // 更新降级级别
-            app('cache')->put('current_degradation_level', $newLevel, now()->addMinutes(30));
-            app('cache')->put('last_recovery_attempt', now()->timestamp, now()->addHour());
+            $this->putDegradationState('current_degradation_level', $newLevel, now()->addMinutes(30));
+            $this->putDegradationState('last_recovery_attempt', now()->timestamp, now()->addHour());
 
             // 执行恢复动作
             $this->executeRecoveryActions($currentLevel, $newLevel);
@@ -1676,14 +1676,14 @@ class ServiceDegradationMiddleware
             // 如果恢复成功，重置恢复尝试计数并记录恢复事件
             if ($newLevel === 0) {
                 $this->performImmediateRecovery();
-                app('cache')->put('recovery_attempts_count', 0, now()->addHour());
+                $this->putDegradationState('recovery_attempts_count', 0, now()->addHour());
                 $this->logRecoveryEvent($currentLevel, $newLevel, $resourceStatus, 'complete');
             } else {
                 $this->logRecoveryEvent($currentLevel, $newLevel, $resourceStatus, 'gradual');
             }
         } catch (\Exception $e) {
             // 恢复失败，记录失败时间
-            app('cache')->put('last_failed_recovery_time', now()->timestamp, now()->addHours(2));
+            $this->putDegradationState('last_failed_recovery_time', now()->timestamp, now()->addHours(2));
 
             Log::error('Recovery attempt failed', [
                 'from_level' => $currentLevel,
@@ -1694,7 +1694,7 @@ class ServiceDegradationMiddleware
             ]);
 
             // 恢复失败时，回滚降级级别
-            app('cache')->put('current_degradation_level', $currentLevel, now()->addMinutes(30));
+            $this->putDegradationState('current_degradation_level', $currentLevel, now()->addMinutes(30));
 
             throw $e; // 重新抛出异常以便上层处理
         }
