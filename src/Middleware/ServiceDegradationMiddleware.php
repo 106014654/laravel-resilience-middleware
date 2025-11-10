@@ -17,12 +17,66 @@ class ServiceDegradationMiddleware
 
     protected $config;
 
+    // 缓存键前缀，确保中间件缓存键的唯一性和跨请求一致性
+    protected const CACHE_PREFIX = 'resilience:';
+
     public function __construct(SystemMonitorService $systemMonitor)
     {
         $this->systemMonitor = $systemMonitor;
 
         // 加载服务降级配置（包含监控和日志配置）
         $this->config = config('resilience.service_degradation', []);
+    }
+
+    /**
+     * 统一的缓存操作方法 - 存储降级状态
+     */
+    protected function putDegradationState(string $key, $value, $ttl = null): bool
+    {
+        try {
+            $ttl = $ttl ?: now()->addMinutes(30);
+            \Illuminate\Support\Facades\Cache::put(self::CACHE_PREFIX . $key, $value, $ttl);
+            return true;
+        } catch (\Exception $e) {
+            Log::error("Failed to cache degradation data for key: {$key}", [
+                'error' => $e->getMessage(),
+                'cache_driver' => config('cache.default')
+            ]);
+            return false;
+        }
+    }
+
+    /**
+     * 统一的缓存操作方法 - 获取降级状态
+     */
+    protected function getDegradationState(string $key, $default = null)
+    {
+        try {
+            return \Illuminate\Support\Facades\Cache::get(self::CACHE_PREFIX . $key, $default);
+        } catch (\Exception $e) {
+            Log::error("Failed to retrieve degradation data for key: {$key}", [
+                'error' => $e->getMessage(),
+                'cache_driver' => config('cache.default')
+            ]);
+            return $default;
+        }
+    }
+
+    /**
+     * 统一的缓存操作方法 - 删除降级状态
+     */
+    protected function forgetDegradationState(string $key): bool
+    {
+        try {
+            \Illuminate\Support\Facades\Cache::forget(self::CACHE_PREFIX . $key);
+            return true;
+        } catch (\Exception $e) {
+            Log::error("Failed to forget degradation data for key: {$key}", [
+                'error' => $e->getMessage(),
+                'cache_driver' => config('cache.default')
+            ]);
+            return false;
+        }
     }
 
     /**
@@ -313,23 +367,6 @@ class ServiceDegradationMiddleware
         }
     }
 
-    /**
-     * 获取降级统计信息
-     *
-     * @return array
-     */
-    public function getDegradationStats()
-    {
-        $systemHealth = $this->systemMonitor->getSystemHealth();
-
-        return [
-            'system_pressure' => $this->systemMonitor->getSystemPressureLevel(),
-            'cpu_usage' => $systemHealth['cpu_usage'],
-            'memory_usage' => $systemHealth['memory_usage'],
-            'degradation_active' => $this->systemMonitor->getSystemPressureLevel() !== 'low',
-            'timestamp' => time()
-        ];
-    }
 
 
     // ========== Actions 和 Performance Optimizations 实现方法 ==========
@@ -1080,13 +1117,30 @@ class ServiceDegradationMiddleware
             'timestamp' => now()->timestamp
         ];
 
-        // 使用Laravel应用的缓存实例
-        app('cache')->put('current_degradation_state', $degradationState, now()->addMinutes(30));
-        // 保持向后兼容性
-        app('cache')->put('current_degradation_level', $maxLevel, now()->addMinutes(30));
-        $currentDegradationState = app('cache')->get('current_degradation_state');
-        $currentLevel = app('cache')->get('current_degradation_level') ?? 0;
-        var_dump($currentLevel);
+        // 使用统一的缓存方法存储降级状态
+        $stateStored = $this->putDegradationState('current_degradation_state', $degradationState);
+        $levelStored = $this->putDegradationState('current_degradation_level', $maxLevel);
+
+        // 验证缓存写入是否成功
+        if ($stateStored && $levelStored) {
+            $testRetrieve = $this->getDegradationState('current_degradation_level');
+            if ($testRetrieve === $maxLevel) {
+                Log::debug('Degradation state cached successfully', [
+                    'level' => $maxLevel,
+                    'cache_driver' => config('cache.default'),
+                    'degradation_state_size' => count($degradationState),
+                    'affected_resources' => array_keys($resourceStrategies)
+                ]);
+            } else {
+                Log::warning('Cache write verification failed', [
+                    'written_level' => $maxLevel,
+                    'retrieved_level' => $testRetrieve
+                ]);
+            }
+        } else {
+            Log::error('Failed to store degradation state in cache');
+        }
+
         Log::warning('Multi-resource degradation strategy executed', [
             'max_level' => $maxLevel,
             'affected_resources_count' => count($resourceStrategies),
@@ -1211,9 +1265,9 @@ class ServiceDegradationMiddleware
         // 获取调试日志配置
         $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
 
-        // 使用Laravel应用的缓存实例获取状态
-        $currentDegradationState = app('cache')->get('current_degradation_state');
-        $currentLevel = app('cache')->get('current_degradation_level') ?? 0;
+        // 使用统一的缓存方法获取降级状态
+        $currentDegradationState = $this->getDegradationState('current_degradation_state');
+        $currentLevel = $this->getDegradationState('current_degradation_level', 0);
 
         // 添加调试日志
         if ($enableDetailedLogging) {
@@ -1244,7 +1298,7 @@ class ServiceDegradationMiddleware
         $recoveryValidationTime = $recoveryConfig['recovery_validation_time'] ?? 120;
 
         // 检查最大恢复尝试次数
-        $recoveryAttempts = app('cache')->get('recovery_attempts_count') ?? 0;
+        $recoveryAttempts = $this->getDegradationState('recovery_attempts_count', 0);
         if ($recoveryAttempts >= $maxRecoveryAttempts) {
             Log::warning('Maximum recovery attempts reached', [
                 'attempts' => $recoveryAttempts,
@@ -1253,9 +1307,9 @@ class ServiceDegradationMiddleware
             ]);
 
             // 如果超过最大尝试次数，等待验证时间后重置尝试计数
-            $lastFailedRecovery = app('cache')->get('last_failed_recovery_time') ?? 0;
+            $lastFailedRecovery = $this->getDegradationState('last_failed_recovery_time', 0);
             if (now()->timestamp - $lastFailedRecovery >= $recoveryValidationTime) {
-                app('cache')->put('recovery_attempts_count', 0, now()->addHour());
+                $this->putDegradationState('recovery_attempts_count', 0, now()->addHour());
                 Log::info('Recovery attempts counter reset after validation time');
             } else {
                 return; // 还在验证等待期内，不进行恢复
@@ -1350,11 +1404,11 @@ class ServiceDegradationMiddleware
         }
 
         // 增加恢复尝试计数
-        $recoveryAttempts = app('cache')->get('recovery_attempts_count') ?? 0;
+        $recoveryAttempts = $this->getDegradationState('recovery_attempts_count', 0);
         $recoveryAttempts++;
-        app('cache')->put('recovery_attempts_count', $recoveryAttempts, now()->addHour());
+        $this->putDegradationState('recovery_attempts_count', $recoveryAttempts, now()->addHour());
 
-        $currentDegradationState = app('cache')->get('current_degradation_state') ?? [];
+        $currentDegradationState = $this->getDegradationState('current_degradation_state', []);
         $recoveredResources = [];
 
         try {
@@ -1383,13 +1437,13 @@ class ServiceDegradationMiddleware
             // 更新降级状态
             $this->updateDegradationStateAfterRecovery($recoveredResources, $resourceStatus);
 
-            app('cache')->put('last_recovery_attempt', now()->timestamp, now()->addHour());
+            $this->putDegradationState('last_recovery_attempt', now()->timestamp, now()->addHour());
 
             // 如果所有资源都恢复到0级别，执行完整恢复
-            $newDegradationState = app('cache')->get('current_degradation_state') ?? [];
+            $newDegradationState = $this->getDegradationState('current_degradation_state', []);
             if (empty($newDegradationState['resource_details'])) {
                 $this->performImmediateRecovery();
-                app('cache')->put('recovery_attempts_count', 0, now()->addHour());
+                $this->putDegradationState('recovery_attempts_count', 0, now()->addHour());
             }
 
             Log::info('Multi-resource gradual recovery completed', [
@@ -1437,7 +1491,7 @@ class ServiceDegradationMiddleware
      */
     protected function updateDegradationStateAfterRecovery(array $recoveredResources, array $resourceStatus): void
     {
-        $currentState = app('cache')->get('current_degradation_state') ?? [];
+        $currentState = $this->getDegradationState('current_degradation_state', []);
 
         if (empty($currentState)) {
             return;
@@ -1464,11 +1518,11 @@ class ServiceDegradationMiddleware
 
         // 更新缓存
         if (empty($currentState['resource_details'])) {
-            app('cache')->forget('current_degradation_state');
-            app('cache')->forget('current_degradation_level');
+            $this->forgetDegradationState('current_degradation_state');
+            $this->forgetDegradationState('current_degradation_level');
         } else {
-            app('cache')->put('current_degradation_state', $currentState, now()->addMinutes(30));
-            app('cache')->put('current_degradation_level', $newMaxLevel, now()->addMinutes(30));
+            $this->putDegradationState('current_degradation_state', $currentState);
+            $this->putDegradationState('current_degradation_level', $newMaxLevel);
         }
     }
 
@@ -1651,23 +1705,24 @@ class ServiceDegradationMiddleware
      */
     protected function performImmediateRecovery(): void
     {
-        // 清除所有降级标识
-        app('cache')->forget('current_degradation_level');
-        app('cache')->forget('last_recovery_attempt');
-        app('cache')->forget('heavy_analytics_disabled');
-        app('cache')->forget('recommendations_disabled');
-        app('cache')->forget('background_jobs_disabled');
-        app('cache')->forget('realtime_disabled');
-        app('cache')->forget('redis_operations_reduced');
-        app('cache')->forget('redis_read_only');
-        app('cache')->forget('redis_writes_disabled');
-        app('cache')->forget('database_read_only');
-        app('cache')->forget('complex_queries_disabled');
+        // 清除所有降级标识 - 使用统一的缓存方法
+        $this->forgetDegradationState('current_degradation_level');
+        $this->forgetDegradationState('current_degradation_state');
+        $this->forgetDegradationState('last_recovery_attempt');
+        $this->forgetDegradationState('heavy_analytics_disabled');
+        $this->forgetDegradationState('recommendations_disabled');
+        $this->forgetDegradationState('background_jobs_disabled');
+        $this->forgetDegradationState('realtime_disabled');
+        $this->forgetDegradationState('redis_operations_reduced');
+        $this->forgetDegradationState('redis_read_only');
+        $this->forgetDegradationState('redis_writes_disabled');
+        $this->forgetDegradationState('database_read_only');
+        $this->forgetDegradationState('complex_queries_disabled');
 
         // 清除恢复相关的缓存
-        app('cache')->forget('recovery_attempts_count');
-        app('cache')->forget('last_failed_recovery_time');
-        app('cache')->forget('recovery_stability_check');
+        $this->forgetDegradationState('recovery_attempts_count');
+        $this->forgetDegradationState('last_failed_recovery_time');
+        $this->forgetDegradationState('recovery_stability_check');
 
         // 重置配置项
         config([

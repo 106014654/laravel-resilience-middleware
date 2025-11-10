@@ -149,6 +149,9 @@ return [
         | 配置缓存标签清理的兼容性选项
         */
         'cache' => [
+            // 缓存键前缀，确保不同模块间的缓存不冲突
+            'prefix' => env('RESILIENCE_CACHE_PREFIX', 'resilience:'),
+
             // 是否允许在标签清理失败时回退到全局清理（谨慎使用）
             'fallback_to_global_flush' => env('RESILIENCE_CACHE_FALLBACK_GLOBAL', false),
 
