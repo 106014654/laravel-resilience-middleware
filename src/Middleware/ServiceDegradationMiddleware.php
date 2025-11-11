@@ -33,11 +33,11 @@ class ServiceDegradationMiddleware
         // 加载服务降级配置（包含监控和日志配置）
         $this->config = config('resilience.service_degradation', []);
 
-        $this->config = config('resilience.system_monitor', []);
+        $config = config('resilience.system_monitor', []);
 
         // 初始化Redis连接
-        if (isset($this->config['redis']['connection'])) {
-            $this->redis = Redis::connection($this->config['redis']['connection']);
+        if (isset($config['redis']['connection'])) {
+            $this->redis = Redis::connection($config['redis']['connection']);
         } else {
             $this->redis = Redis::connection('default');
         }
@@ -1965,11 +1965,6 @@ class ServiceDegradationMiddleware
         $request->attributes->set('degraded', true);
         $request->attributes->set('degradation_level', $level);
         $request->attributes->set('resource_status', $resourceStatus);
-
-        // 设置 HTTP 头部标识
-        $request->headers->set('X-Degraded', 'true');
-        $request->headers->set('X-Degradation-Level', (string)$level);
-        $request->headers->set('X-Degradation-Mode', 'passthrough');
 
         Log::info('Service degradation context set', [
             'route' => $request->route() ? $request->route()->getName() : null,
