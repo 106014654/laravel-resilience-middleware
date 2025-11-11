@@ -5,6 +5,8 @@ namespace OneLap\LaravelResilienceMiddleware\Middleware;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
+
 use OneLap\LaravelResilienceMiddleware\Services\SystemMonitorService;
 
 /**
@@ -17,6 +19,10 @@ class ServiceDegradationMiddleware
 
     protected $config;
 
+    protected $redis;
+
+
+
     // 缓存键前缀，确保中间件缓存键的唯一性和跨请求一致性
     protected const CACHE_PREFIX = 'resilience:';
 
@@ -26,6 +32,15 @@ class ServiceDegradationMiddleware
 
         // 加载服务降级配置（包含监控和日志配置）
         $this->config = config('resilience.service_degradation', []);
+
+        $this->config = config('resilience.system_monitor', []);
+
+        // 初始化Redis连接
+        if (isset($this->config['redis']['connection'])) {
+            $this->redis = Redis::connection($this->config['redis']['connection']);
+        } else {
+            $this->redis = Redis::connection('default');
+        }
     }
 
     /**
@@ -34,13 +49,26 @@ class ServiceDegradationMiddleware
     protected function putDegradationState(string $key, $value, $ttl = null): bool
     {
         try {
-            $ttl = $ttl ?: now()->addMinutes(30);
-            \Illuminate\Support\Facades\Cache::put(self::CACHE_PREFIX . $key, $value, $ttl);
+            $redisKey = self::CACHE_PREFIX . $key;
+            $ttlSeconds = $ttl ? $ttl->diffInSeconds(now()) : 1800; // 默认30分钟
+
+            // 序列化值以支持复杂数据类型
+            $serializedValue = json_encode($value);
+
+            // 使用Redis存储数据
+            $this->redis->setex($redisKey, $ttlSeconds, $serializedValue);
+
+            Log::debug("Redis cache stored", [
+                'key' => $redisKey,
+                'ttl_seconds' => $ttlSeconds,
+                'value_type' => gettype($value)
+            ]);
+
             return true;
         } catch (\Exception $e) {
             Log::error("Failed to cache degradation data for key: {$key}", [
                 'error' => $e->getMessage(),
-                'cache_driver' => config('cache.default')
+                'redis_connection' => $this->config['redis']['connection'] ?? 'default'
             ]);
             return false;
         }
@@ -52,11 +80,37 @@ class ServiceDegradationMiddleware
     protected function getDegradationState(string $key, $default = null)
     {
         try {
-            return \Illuminate\Support\Facades\Cache::get(self::CACHE_PREFIX . $key, $default);
+            $redisKey = self::CACHE_PREFIX . $key;
+
+            // 从Redis获取数据
+            $value = $this->redis->get($redisKey);
+
+            if ($value === null || $value === false) {
+                Log::debug("Redis cache miss", [
+                    'key' => $redisKey,
+                    'returning_default' => $default
+                ]);
+                return $default;
+            }
+
+            // 反序列化数据
+            $decodedValue = json_decode($value, true);
+
+            // 如果json_decode失败，可能是简单字符串值
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $decodedValue = $value;
+            }
+
+            Log::debug("Redis cache hit", [
+                'key' => $redisKey,
+                'value_type' => gettype($decodedValue)
+            ]);
+
+            return $decodedValue;
         } catch (\Exception $e) {
             Log::error("Failed to retrieve degradation data for key: {$key}", [
                 'error' => $e->getMessage(),
-                'cache_driver' => config('cache.default')
+                'redis_connection' => $this->config['redis']['connection'] ?? 'default'
             ]);
             return $default;
         }
@@ -68,12 +122,78 @@ class ServiceDegradationMiddleware
     protected function forgetDegradationState(string $key): bool
     {
         try {
-            \Illuminate\Support\Facades\Cache::forget(self::CACHE_PREFIX . $key);
+            $redisKey = self::CACHE_PREFIX . $key;
+
+            // 从Redis删除数据
+            $result = $this->redis->del($redisKey);
+
+            Log::debug("Redis cache forget", [
+                'key' => $redisKey,
+                'deleted' => $result > 0
+            ]);
+
             return true;
         } catch (\Exception $e) {
             Log::error("Failed to forget degradation data for key: {$key}", [
                 'error' => $e->getMessage(),
-                'cache_driver' => config('cache.default')
+                'redis_connection' => $this->config['redis']['connection'] ?? 'default'
+            ]);
+            return false;
+        }
+    }
+
+    /**
+     * 便利方法 - 存储简单的标志值
+     */
+    protected function putSimpleFlag(string $key, $value, $ttl = null): bool
+    {
+        return $this->putDegradationState($key, $value, $ttl);
+    }
+
+    /**
+     * 便利方法 - 获取简单的标志值
+     */
+    protected function getSimpleFlag(string $key, $default = null)
+    {
+        return $this->getDegradationState($key, $default);
+    }
+
+    /**
+     * 便利方法 - 存储键值对数组（兼容cache助手函数的用法）
+     */
+    protected function putMultiple(array $values, $ttl = null): bool
+    {
+        $success = true;
+        foreach ($values as $key => $value) {
+            if (!$this->putDegradationState($key, $value, $ttl)) {
+                $success = false;
+            }
+        }
+        return $success;
+    }
+
+    /**
+     * 便利方法 - Redis flush操作（清理所有resilience相关的键）
+     */
+    protected function flushResilienceCache(): bool
+    {
+        try {
+            // 获取所有以 resilience: 开头的键
+            $keys = $this->redis->keys(self::CACHE_PREFIX . '*');
+
+            if (!empty($keys)) {
+                // 删除所有匹配的键
+                $this->redis->del($keys);
+
+                Log::info('Flushed resilience cache', [
+                    'keys_deleted' => count($keys)
+                ]);
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error("Failed to flush resilience cache", [
+                'error' => $e->getMessage()
             ]);
             return false;
         }
@@ -185,7 +305,7 @@ class ServiceDegradationMiddleware
     protected function handleCacheFallback(Request $request, array $config)
     {
         $cacheKey = $this->generateCacheKey($request);
-        $cachedResponse = cache($cacheKey);
+        $cachedResponse = $this->getSimpleFlag($cacheKey);
 
         if ($cachedResponse) {
             Log::info('Serving cached response due to degradation', [
@@ -548,7 +668,7 @@ class ServiceDegradationMiddleware
         config(['analytics.heavy_processing' => false]);
 
         // 缓存标志，避免重复检查
-        cache(['heavy_analytics_disabled' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('heavy_analytics_disabled', true, now()->addMinutes(10));
 
         $config = config('resilience.service_degradation', []);
         $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
@@ -565,13 +685,13 @@ class ServiceDegradationMiddleware
         // 禁用调试日志
         config(['app.debug' => false]);
 
-        cache(['log_verbosity_reduced' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('log_verbosity_reduced', true, now()->addMinutes(10));
     }
 
     protected function disableBackgroundJobs(): void
     {
         // 暂停队列处理
-        cache(['background_jobs_disabled' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('background_jobs_disabled', true, now()->addMinutes(10));
 
         // 增加队列延迟
         config(['queue.connections.default.delay' => 3600]);
@@ -594,7 +714,7 @@ class ServiceDegradationMiddleware
     protected function disableRecommendationsEngine(): void
     {
         app()->instance('recommendations.disabled', true);
-        cache(['recommendations_disabled' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('recommendations_disabled', true, now()->addMinutes(10));
 
         Log::info('Recommendations engine disabled');
     }
@@ -607,7 +727,7 @@ class ServiceDegradationMiddleware
             'realtime.features' => false,
         ]);
 
-        cache(['realtime_disabled' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('realtime_disabled', true, now()->addMinutes(10));
     }
 
     protected function enableMinimalResponseProcessing(): void
@@ -619,7 +739,7 @@ class ServiceDegradationMiddleware
     protected function forceGarbageCollection(): void
     {
         gc_collect_cycles();
-        cache(['gc_forced' => now()], now()->addMinute());
+        $this->putSimpleFlag('gc_forced', now(), now()->addMinute());
     }
 
     protected function enableEmergencyCpuMode(): void
@@ -670,7 +790,7 @@ class ServiceDegradationMiddleware
 
     protected function reduceCacheSize(float $percentage): void
     {
-        cache(['cache_size_reduction' => $percentage], now()->addMinutes(10));
+        $this->putSimpleFlag('cache_size_reduction', $percentage, now()->addMinutes(10));
 
         // 清理指定百分比的缓存
         $tagsToReduce = ['temp', 'analytics', 'reports'];
@@ -707,7 +827,7 @@ class ServiceDegradationMiddleware
     protected function performEmergencyMemoryCleanup(): void
     {
         // 清理各种缓存
-        app('cache')->flush();
+        $this->flushResilienceCache();
 
         // 强制垃圾回收
         gc_collect_cycles();
@@ -757,7 +877,7 @@ class ServiceDegradationMiddleware
     protected function reduceRedisOperations(): void
     {
         config(['cache.redis.operations_limit' => 100]);
-        cache(['redis_operations_reduced' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('redis_operations_reduced', true, now()->addMinutes(10));
 
         Log::info('Redis operations reduced');
     }
@@ -779,7 +899,7 @@ class ServiceDegradationMiddleware
     protected function bypassNonCriticalRedis(): void
     {
         $nonCriticalKeys = ['analytics:', 'temp:', 'session:', 'widgets:'];
-        cache(['redis_bypass_keys' => $nonCriticalKeys], now()->addMinutes(10));
+        $this->putSimpleFlag('redis_bypass_keys', $nonCriticalKeys, now()->addMinutes(10));
 
         Log::info('Non-critical Redis operations bypassed');
     }
@@ -797,7 +917,7 @@ class ServiceDegradationMiddleware
     protected function enableRedisReadOnlyMode(): void
     {
         config(['database.redis.read_only' => true]);
-        cache(['redis_read_only' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('redis_read_only', true, now()->addMinutes(10));
     }
 
     protected function enableCompleteDatabaseFallback(): void
@@ -809,7 +929,7 @@ class ServiceDegradationMiddleware
     protected function disableRedisWrites(): void
     {
         config(['cache.redis.read_only' => true]);
-        cache(['redis_writes_disabled' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('redis_writes_disabled', true, now()->addMinutes(10));
     }
 
     protected function enableCompleteRedisBypass(): void
@@ -853,7 +973,7 @@ class ServiceDegradationMiddleware
     protected function enableDatabaseReadOnlyMode(): void
     {
         config(['database.read_only' => true]);
-        cache(['database_read_only' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('database_read_only', true, now()->addMinutes(10));
 
         Log::warning('Database switched to read-only mode');
     }
@@ -861,7 +981,7 @@ class ServiceDegradationMiddleware
     protected function disableComplexQueries(): void
     {
         config(['database.complex_queries_disabled' => true]);
-        cache(['complex_queries_disabled' => true], now()->addMinutes(10));
+        $this->putSimpleFlag('complex_queries_disabled', true, now()->addMinutes(10));
     }
 
     protected function forceQueryCaching(): void
@@ -1395,7 +1515,7 @@ class ServiceDegradationMiddleware
      */
     protected function performGradualResourceRecovery(array $recoverableResources, array $resourceStatus): void
     {
-        $lastRecoveryAttempt = cache('last_recovery_attempt', 0);
+        $lastRecoveryAttempt = $this->getSimpleFlag('last_recovery_attempt', 0);
         $recoveryInterval = config('resilience.service_degradation.recovery.recovery_step_interval', 30);
 
         // 检查恢复间隔
@@ -1567,7 +1687,7 @@ class ServiceDegradationMiddleware
         $stabilityKey = 'recovery_stability_check';
 
         // 获取稳定性检查历史记录
-        $stabilityHistory = cache($stabilityKey, []);
+        $stabilityHistory = $this->getSimpleFlag($stabilityKey, []);
 
         // 清理过期的历史记录（只保留验证时间窗口内的记录）
         $stabilityHistory = array_filter($stabilityHistory, function ($record) use ($currentTime, $validationTime) {
@@ -1581,7 +1701,7 @@ class ServiceDegradationMiddleware
         ];
 
         // 缓存更新后的历史记录
-        app('cache')->put($stabilityKey, $stabilityHistory, now()->addHours(2));
+        $this->putSimpleFlag($stabilityKey, $stabilityHistory, now()->addHours(2));
 
         // 如果历史记录不足验证时间窗口，则不满足稳定性要求
         if (empty($stabilityHistory)) {
@@ -1643,7 +1763,7 @@ class ServiceDegradationMiddleware
      */
     protected function performGradualRecovery(int $currentLevel, array $resourceStatus): void
     {
-        $lastRecoveryAttempt = cache('last_recovery_attempt', 0);
+        $lastRecoveryAttempt = $this->getSimpleFlag('last_recovery_attempt', 0);
         $recoveryInterval = config('resilience.service_degradation.recovery.recovery_step_interval', 30);
 
         // 检查恢复间隔
@@ -1922,10 +2042,10 @@ class ServiceDegradationMiddleware
                 $this->flushCacheWithTags(['temp', 'analytics', 'reports']);
                 break;
             case 'emergency':
-                app('cache')->flush();
+                $this->flushResilienceCache();
                 break;
             case 'complete_clear':
-                app('cache')->flush();
+                $this->flushResilienceCache();
                 if (function_exists('opcache_reset')) {
                     opcache_reset();
                 }
@@ -1942,93 +2062,18 @@ class ServiceDegradationMiddleware
      */
     protected function flushCacheWithTags(array $tags): void
     {
+        // 使用Redis直接清理，不再依赖Laravel缓存标签
         try {
-            // 检查缓存驱动是否支持标签
-            $cacheStore = app('cache')->getStore();
-            $cacheDriver = config('cache.default');
-            $tagSupportDrivers = config('resilience.service_degradation.cache.tag_support_drivers', ['redis', 'memcached', 'array']);
-
-            // Redis、Memcached 等驱动支持标签
-            if (in_array($cacheDriver, $tagSupportDrivers) && method_exists($cacheStore, 'tags')) {
-                app('cache')->tags($tags)->flush();
-                return;
-            }
-
-            // 不支持标签的驱动，检查是否启用模式清理
-            $enablePatternCleanup = config('resilience.service_degradation.cache.enable_pattern_cleanup', true);
-            if ($enablePatternCleanup) {
-                $this->flushCacheByKeyPatterns($tags);
+            foreach ($tags as $tag) {
+                $this->flushKnownKeys($tag);
             }
         } catch (\Exception $e) {
-            // 如果标签清理失败，记录日志并使用全局清理作为后备方案
-            Log::warning('Tagged cache cleanup failed, checking fallback options', [
+            Log::warning('Tagged cache cleanup failed', [
                 'tags' => $tags,
-                'error' => $e->getMessage(),
-                'cache_driver' => config('cache.default')
+                'error' => $e->getMessage()
             ]);
-
-            // 后备方案：清理所有缓存（谨慎使用）
-            $allowGlobalFallback = config('resilience.service_degradation.cache.fallback_to_global_flush', false);
-            if ($allowGlobalFallback) {
-                Log::warning('Falling back to global cache flush - this may impact performance');
-                app('cache')->flush();
-            } else {
-                Log::info('Global cache fallback disabled, attempting known key cleanup');
-                // 尝试清理已知键作为最后的后备方案
-                foreach ($tags as $tag) {
-                    $this->flushKnownKeys($tag);
-                }
-            }
-        }
-    }
-
-    /**
-     * 根据键名模式清理缓存
-     * 
-     * 对于不支持标签的缓存驱动，通过键名模式来清理特定缓存
-     * 
-     * @param array $tags 标签列表，用于构造键名模式
-     */
-    protected function flushCacheByKeyPatterns(array $tags): void
-    {
-        // 为每个标签定义可能的键名模式
-        $keyPatterns = [
-            'temp' => ['temp:*', 'temporary:*', 'cache:temp:*'],
-            'analytics' => ['analytics:*', 'stats:*', 'metrics:*'],
-            'reports' => ['reports:*', 'report:*', 'export:*'],
-            'widgets' => ['widgets:*', 'widget:*', 'dashboard:*'],
-            'recommendations' => ['recommendations:*', 'suggest:*']
-        ];
-
-        foreach ($tags as $tag) {
-            if (!isset($keyPatterns[$tag])) {
-                continue;
-            }
-
-            foreach ($keyPatterns[$tag] as $pattern) {
-                // 尝试使用Redis的键名模式删除（如果是Redis驱动）
-                if (config('cache.default') === 'redis') {
-                    try {
-                        $cacheStore = app('cache')->getStore();
-                        // 检查是否是Redis缓存存储
-                        if ($cacheStore instanceof \Illuminate\Cache\RedisStore) {
-                            $redis = $cacheStore->connection();
-                            $keys = $redis->keys($pattern);
-                            if (!empty($keys)) {
-                                $redis->del($keys);
-                            }
-                        }
-                    } catch (\Exception $e) {
-                        Log::debug('Redis pattern deletion failed', [
-                            'pattern' => $pattern,
-                            'error' => $e->getMessage()
-                        ]);
-                    }
-                } else {
-                    // 对于其他驱动，尝试删除已知的具体键名
-                    $this->flushKnownKeys($tag);
-                }
-            }
+            // 后备方案：清理所有弹性相关缓存
+            $this->flushResilienceCache();
         }
     }
 
@@ -2068,7 +2113,7 @@ class ServiceDegradationMiddleware
 
         if (isset($knownKeys[$tag])) {
             foreach ($knownKeys[$tag] as $key) {
-                app('cache')->forget($key);
+                $this->forgetDegradationState($key);
             }
         }
     }
@@ -2415,49 +2460,49 @@ class ServiceDegradationMiddleware
             switch ($action) {
                 // CPU 相关actions恢复
                 case 'disable_heavy_analytics':
-                    if (cache('heavy_analytics_disabled')) {
+                    if ($this->getSimpleFlag('heavy_analytics_disabled')) {
                         config(['analytics.heavy_processing' => true]);
                         app()->instance('analytics.heavy.disabled', false);
-                        app('cache')->forget('heavy_analytics_disabled');
+                        $this->forgetDegradationState('heavy_analytics_disabled');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
 
                 case 'reduce_log_verbosity':
-                    if (cache('log_verbosity_reduced')) {
+                    if ($this->getSimpleFlag('log_verbosity_reduced')) {
                         config([
                             'logging.level' => env('LOG_LEVEL', 'debug'),
                             'app.debug' => env('APP_DEBUG', false)
                         ]);
-                        app('cache')->forget('log_verbosity_reduced');
+                        $this->forgetDegradationState('log_verbosity_reduced');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
 
                 case 'disable_background_jobs':
-                    if (cache('background_jobs_disabled')) {
-                        app('cache')->forget('background_jobs_disabled');
+                    if ($this->getSimpleFlag('background_jobs_disabled')) {
+                        $this->forgetDegradationState('background_jobs_disabled');
                         config(['queue.connections.default.delay' => 0]);
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
 
                 case 'disable_recommendations_engine':
-                    if (cache('recommendations_disabled')) {
+                    if ($this->getSimpleFlag('recommendations_disabled')) {
                         app()->instance('recommendations.disabled', false);
-                        app('cache')->forget('recommendations_disabled');
+                        $this->forgetDegradationState('recommendations_disabled');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
 
                 case 'disable_real_time_features':
-                    if (cache('realtime_disabled')) {
+                    if ($this->getSimpleFlag('realtime_disabled')) {
                         config([
                             'websockets.enabled' => true,
                             'broadcasting.enabled' => true,
                             'realtime.features' => true,
                         ]);
-                        app('cache')->forget('realtime_disabled');
+                        $this->forgetDegradationState('realtime_disabled');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
@@ -2485,16 +2530,16 @@ class ServiceDegradationMiddleware
 
                 // Redis 相关actions恢复
                 case 'reduce_redis_operations':
-                    if (cache('redis_operations_reduced')) {
-                        app('cache')->forget('redis_operations_reduced');
+                    if ($this->getSimpleFlag('redis_operations_reduced')) {
+                        $this->forgetDegradationState('redis_operations_reduced');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
 
                 case 'redis_read_only_mode':
-                    if (cache('redis_read_only')) {
+                    if ($this->getSimpleFlag('redis_read_only')) {
                         config(['database.redis.read_only' => false]);
-                        app('cache')->forget('redis_read_only');
+                        $this->forgetDegradationState('redis_read_only');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
@@ -2509,17 +2554,17 @@ class ServiceDegradationMiddleware
 
                 // Database 相关actions恢复
                 case 'enable_read_only_mode':
-                    if (cache('database_read_only')) {
+                    if ($this->getSimpleFlag('database_read_only')) {
                         config(['database.read_only' => false]);
-                        app('cache')->forget('database_read_only');
+                        $this->forgetDegradationState('database_read_only');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
 
                 case 'disable_complex_queries':
-                    if (cache('complex_queries_disabled')) {
+                    if ($this->getSimpleFlag('complex_queries_disabled')) {
                         config(['database.complex_queries_disabled' => false]);
-                        app('cache')->forget('complex_queries_disabled');
+                        $this->forgetDegradationState('complex_queries_disabled');
                         Log::info("Recovered: {$action} for {$resource} at level {$level}");
                     }
                     break;
