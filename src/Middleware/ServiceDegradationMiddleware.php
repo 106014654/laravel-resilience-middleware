@@ -432,6 +432,12 @@ class ServiceDegradationMiddleware
     protected function putDegradationState(string $key, $value, $ttl = 600): bool
     {
         $redisKey = self::CACHE_PREFIX . $this->getKeyWithIpPort($key);
+
+        // 如果值是数组，序列化为JSON存储
+        if (is_array($value)) {
+            $value = json_encode($value);
+        }
+
         if ($ttl) {
             return (bool)$this->redis->set($redisKey, $value, 'EX', $this->convertTtlToSeconds($ttl));
         } else {
@@ -446,7 +452,18 @@ class ServiceDegradationMiddleware
     {
         $redisKey = self::CACHE_PREFIX . $this->getKeyWithIpPort($key);
         $val = $this->redis->get($redisKey);
-        return $val !== null ? $val : $default;
+
+        if ($val === null) {
+            return $default;
+        }
+
+        // 尝试JSON解码，如果失败则返回原始值
+        $decoded = json_decode($val, true);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            return $decoded;
+        }
+
+        return $val;
     }
 
     /**
