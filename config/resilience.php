@@ -232,9 +232,9 @@ return [
                 95 => 4,  // CPU 95% 触发4级降级（紧急）
             ],
             'memory' => [
-                75 => 1,  // 内存 75% 触发1级降级（内存更敏感）
-                85 => 2,  // 内存 85% 触发2级降级
-                92 => 3,  // 内存 92% 触发3级降级
+                10 => 1,  // 内存 75% 触发1级降级（内存更敏感）
+                15 => 2,  // 内存 85% 触发2级降级
+                20 => 3,  // 内存 92% 触发3级降级
                 96 => 4,  // 内存 96% 触发4级降级（紧急）
             ],
             'redis' => [
@@ -292,19 +292,19 @@ return [
                 10 => [
                     'level' => 1,
                     'actions' => [
-                        'disable_image_processing', // 禁用图片处理功能
+                        'heavy_analytics_disabled', // 禁用图片处理功能
                     ],
                 ],
                 15 => [
                     'level' => 2,
                     'actions' => [
-                        'disable_file_processing', // 禁用文件处理功能
+                        'cache_aggressive', // 禁用文件处理功能
                     ],
                 ],
                 20 => [
                     'level' => 3,
                     'actions' => [
-                        'reject_large_requests', // 拒绝大型请求
+                        'realtime_disabled', // 拒绝大型请求
                     ],
                 ],
             ],

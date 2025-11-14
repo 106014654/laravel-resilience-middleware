@@ -1935,29 +1935,36 @@ class ServiceDegradationMiddleware
 
         // 获取稳定性检查历史记录
         $stabilityHistory = $this->getSimpleFlag($stabilityKey, []);
+        if (!is_array($stabilityHistory)) {
+            $stabilityHistory = [];
+        }
 
         // 清理过期的历史记录（只保留验证时间窗口内的记录）
         $stabilityHistory = array_filter($stabilityHistory, function ($record) use ($currentTime, $validationTime) {
-            return ($currentTime - $record['timestamp']) <= $validationTime;
+            return isset($record['timestamp']) && ($currentTime - $record['timestamp']) <= $validationTime;
         });
 
-        // 添加当前状态记录
+        // 追加当前状态记录
         $stabilityHistory[] = [
             'timestamp' => $currentTime,
             'resource_status' => $resourceStatus,
         ];
 
+        // 重新按时间排序，保证 oldestRecord 是最早的
+        usort($stabilityHistory, function ($a, $b) {
+            return $a['timestamp'] <=> $b['timestamp'];
+        });
+
         // 缓存更新后的历史记录
         $this->putSimpleFlag($stabilityKey, $stabilityHistory, now()->addHours(2));
 
-        // 如果历史记录不足验证时间窗口，则不满足稳定性要求
-        if (empty($stabilityHistory)) {
+        // 检查窗口内时间跨度
+        if (count($stabilityHistory) < 2) {
             return false;
         }
-
-        $oldestRecord = reset($stabilityHistory);
-        $timeDiff = $currentTime - $oldestRecord['timestamp'];
-
+        $oldestRecord = $stabilityHistory[0];
+        $newestRecord = $stabilityHistory[count($stabilityHistory) - 1];
+        $timeDiff = $newestRecord['timestamp'] - $oldestRecord['timestamp'];
         if ($timeDiff < $validationTime) {
             Log::info('Recovery stability validation: insufficient time window', [
                 'time_diff' => $timeDiff,
@@ -1977,7 +1984,6 @@ class ServiceDegradationMiddleware
                 if (!isset($thresholds[$resource])) {
                     continue;
                 }
-
                 foreach ($thresholds[$resource] as $threshold => $level) {
                     if ($level === $currentLevel) {
                         // 如果历史记录中有任何时刻资源使用率超过恢复阈值，则不稳定
@@ -2978,12 +2984,15 @@ class ServiceDegradationMiddleware
      */
     protected function getKeyWithIpPort(string $key): string
     {
-        if ($this->currentRequest) {
-            $ip = $this->currentRequest->ip();
-            $port = $this->currentRequest->server('SERVER_PORT');
-            return $ip . ':' . $port . ':' . $key;
+        // 获取本机IP和当前PHP-FPM/web server监听端口
+        $ip = getHostByName(getHostName());
+        // 优先用 $_SERVER['SERVER_ADDR']，但有些环境下可能为空
+        if (!empty($_SERVER['SERVER_ADDR'])) {
+            $ip = $_SERVER['SERVER_ADDR'];
         }
-        return $key;
+        // 端口优先用 $_SERVER['SERVER_PORT']，否则 fallback 80
+        $port = $_SERVER['SERVER_PORT'] ?? '80';
+        return $ip . ':' . $port . ':' . $key;
     }
 
     /**
