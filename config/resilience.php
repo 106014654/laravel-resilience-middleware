@@ -288,7 +288,26 @@ return [
             ],
 
             // Memory 内存降级策略
-            'memory' => [],
+            'memory' => [
+                10 => [
+                    'level' => 1,
+                    'actions' => [
+                        'disable_image_processing', // 禁用图片处理功能
+                    ],
+                ],
+                15 => [
+                    'level' => 2,
+                    'actions' => [
+                        'disable_file_processing', // 禁用文件处理功能
+                    ],
+                ],
+                20 => [
+                    'level' => 3,
+                    'actions' => [
+                        'reject_large_requests', // 拒绝大型请求
+                    ],
+                ],
+            ],
 
             // Redis 降级策略
             'redis' => [],
