@@ -1939,47 +1939,57 @@ class ServiceDegradationMiddleware
             $stabilityHistory = [];
         }
 
-        // 清理过期的历史记录（只保留验证时间窗口内的记录）
-        $stabilityHistory = array_filter($stabilityHistory, function ($record) use ($currentTime, $validationTime) {
-            return isset($record['timestamp']) && ($currentTime - $record['timestamp']) <= $validationTime;
-        });
-
         // 追加当前状态记录
         $stabilityHistory[] = [
             'timestamp' => $currentTime,
             'resource_status' => $resourceStatus,
         ];
 
-        // 重新按时间排序，保证 oldestRecord 是最早的
+        // 重新按时间排序，保证记录按时间正确排列
         usort($stabilityHistory, function ($a, $b) {
             return $a['timestamp'] <=> $b['timestamp'];
         });
 
-        // 缓存更新后的历史记录
-        $this->putSimpleFlag($stabilityKey, $stabilityHistory, now()->addHours(2));
-
-        // 检查窗口内时间跨度
+        // 检查是否有足够的时间跨度（在清理之前先检查）
         if (count($stabilityHistory) < 2) {
+            // 缓存当前记录，等待更多数据
+            $this->putSimpleFlag($stabilityKey, $stabilityHistory, now()->addHours(2));
             return false;
         }
+
         $oldestRecord = $stabilityHistory[0];
         $newestRecord = $stabilityHistory[count($stabilityHistory) - 1];
-        $timeDiff = $newestRecord['timestamp'] - $oldestRecord['timestamp'];
-        if ($timeDiff < $validationTime) {
+        $totalTimeDiff = $newestRecord['timestamp'] - $oldestRecord['timestamp'];
+
+        // 只有当时间跨度达到要求时，才进行稳定性验证
+        if ($totalTimeDiff < $validationTime) {
             Log::info('Recovery stability validation: insufficient time window', [
-                'time_diff' => $timeDiff,
+                'time_diff' => $totalTimeDiff,
                 'required_time' => $validationTime,
-                'records_count' => count($stabilityHistory)
+                'records_count' => count($stabilityHistory),
+                'oldest_timestamp' => $oldestRecord['timestamp'],
+                'newest_timestamp' => $newestRecord['timestamp']
             ]);
+            // 缓存当前记录，等待更多时间
+            $this->putSimpleFlag($stabilityKey, $stabilityHistory, now()->addHours(2));
             return false;
         }
+
+        // 现在清理过期的历史记录（只保留验证时间窗口内的记录）
+        $validStabilityHistory = array_filter($stabilityHistory, function ($record) use ($currentTime, $validationTime) {
+            return isset($record['timestamp']) && ($currentTime - $record['timestamp']) <= $validationTime;
+        });
+
+        // 缓存清理后的历史记录
+        $this->putSimpleFlag($stabilityKey, $validStabilityHistory, now()->addHours(2));
 
         // 检查在验证时间窗口内，系统资源是否持续稳定
         $currentLevel = $this->getDegradationState('current_degradation_level', 0);
         $thresholds = config('resilience.service_degradation.resource_thresholds', []);
         $recoveryBuffer = config('resilience.service_degradation.recovery.recovery_threshold_buffer', 5);
 
-        foreach ($stabilityHistory as $record) {
+        // 使用清理后的有效历史记录进行稳定性检查
+        foreach ($validStabilityHistory as $record) {
             foreach ($record['resource_status'] as $resource => $usage) {
                 if (!isset($thresholds[$resource])) {
                     continue;
@@ -2004,8 +2014,8 @@ class ServiceDegradationMiddleware
 
         Log::info('Recovery stability validation passed', [
             'validation_time' => $validationTime,
-            'stable_duration' => $timeDiff,
-            'records_analyzed' => count($stabilityHistory)
+            'stable_duration' => $totalTimeDiff,
+            'records_analyzed' => count($validStabilityHistory)
         ]);
 
         return true;
