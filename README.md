@@ -136,7 +136,11 @@ php artisan resilience:config-status
 2. **清理缓存**：`php artisan config:clear`
 3. **验证配置**：`php artisan resilience:config-status`
 
-> 💡 **配置加载机制**：系统会智能检测用户是否发布了配置文件，优先使用用户配置，缺失的配置项会自动使用默认值补充。
+> 💡 **配置加载机制**：
+> - **已发布配置文件**：优先使用 `config/resilience.php` 用户配置，包默认配置作为fallback
+> - **未发布配置文件**：使用包内默认配置
+> - **配置覆盖顺序**：用户配置 > 环境变量 > 包默认配置
+> - Laravel 的 `config()` 函数会自动读取主项目的配置文件
 
 ## 🚀 快速开始
 

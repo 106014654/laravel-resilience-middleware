@@ -103,56 +103,15 @@ class ResilienceMiddlewareServiceProvider extends ServiceProvider
         $userConfigPath = config_path('resilience.php');
         $packageConfigPath = __DIR__ . '/../config/resilience.php';
 
-        // 如果用户已发布配置文件，则不使用mergeConfigFrom
-        // 让Laravel自动加载用户的配置文件
+        // 如果用户已发布配置文件，Laravel会自动加载用户配置
+        // 我们只需要将包的默认配置作为fallback，确保缺失的配置项有默认值
         if (file_exists($userConfigPath)) {
-            // 用户已发布配置文件，Laravel会自动加载
-            // 我们只需要确保默认值的合并
-            $this->mergeConfigFromUserFile($userConfigPath, $packageConfigPath);
+            // 用户已发布配置文件，仅合并默认值作为fallback
+            $this->mergeConfigFrom($packageConfigPath, 'resilience');
         } else {
             // 用户未发布配置文件，使用包默认配置
             $this->mergeConfigFrom($packageConfigPath, 'resilience');
         }
-    }
-
-    /**
-     * 从用户配置文件合并配置，确保缺失的配置项使用默认值
-     * 
-     * @param string $userConfigPath 用户配置文件路径
-     * @param string $packageConfigPath 包配置文件路径
-     */
-    protected function mergeConfigFromUserFile($userConfigPath, $packageConfigPath)
-    {
-        $userConfig = require $userConfigPath;
-        $defaultConfig = require $packageConfigPath;
-
-        // 深度合并配置，用户配置优先，缺失项用默认配置补充
-        $mergedConfig = $this->deepMergeConfig($defaultConfig, $userConfig);
-
-        // 设置合并后的配置
-        config(['resilience' => $mergedConfig]);
-    }
-
-    /**
-     * 深度合并配置数组
-     * 
-     * @param array $default 默认配置
-     * @param array $user 用户配置
-     * @return array 合并后的配置
-     */
-    protected function deepMergeConfig(array $default, array $user)
-    {
-        $merged = $default;
-
-        foreach ($user as $key => $value) {
-            if (is_array($value) && isset($merged[$key]) && is_array($merged[$key])) {
-                $merged[$key] = $this->deepMergeConfig($merged[$key], $value);
-            } else {
-                $merged[$key] = $value;
-            }
-        }
-
-        return $merged;
     }
 
     /**
