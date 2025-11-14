@@ -235,110 +235,60 @@ class ServiceDegradationMiddleware
         switch ($action) {
             // CPU相关动作
             case 'disable_heavy_analytics':
-                $this->putSimpleFlag('heavy_analytics_disabled');
-                break;
             case 'reduce_log_verbosity':
-                $this->putSimpleFlag('log_verbosity_reduced');
-                break;
             case 'disable_background_jobs':
-                $this->putSimpleFlag('background_jobs_disabled');
-                break;
             case 'enable_aggressive_caching':
-                $this->putSimpleFlag('cache_aggressive');
-                break;
             case 'disable_recommendations_engine':
-                $this->putSimpleFlag('recommendations_disabled');
-                break;
             case 'disable_realtime_features':
-                $this->putSimpleFlag('realtime_disabled');
-                break;
             case 'enable_minimal_response_processing':
-                $this->putSimpleFlag('response_minimal');
-                break;
-            case 'force_garbage_collection':
-                gc_collect_cycles();
-                $this->putSimpleFlag('gc_forced');
+            case 'gc_forced':
+                if ($action === 'gc_forced') gc_collect_cycles();
+                $this->putSimpleFlag($action);
                 break;
             case 'enable_emergency_cpu_mode':
-                $this->putSimpleFlag('emergency_cpu_mode');
-                break;
             case 'enable_static_responses_only':
-                $this->putSimpleFlag('response_static_only');
+                $this->putSimpleFlag($action);
                 break;
 
             // Memory相关动作  
             case 'reduce_cache_size':
-                $this->putSimpleFlag('cache_size_reduction');
+                $this->putSimpleFlag($action);
                 $this->flushResilienceCache();
                 break;
             case 'disable_file_processing':
-                $this->putSimpleFlag('file_processing_disabled');
-                break;
             case 'enable_minimal_object_creation':
-                $this->putSimpleFlag('minimal_object_creation');
+            case 'enable_large_request_rejection':
+                $this->putSimpleFlag($action);
                 break;
             case 'perform_emergency_memory_cleanup':
                 $this->flushResilienceCache();
                 gc_collect_cycles();
-                $this->putSimpleFlag('emergency_memory_cleanup_performed');
-                break;
-            case 'enable_large_request_rejection':
-                $this->putSimpleFlag('request_too_large');
+                $this->putSimpleFlag($action);
                 break;
 
             // Redis相关动作
             case 'reduce_redis_operations':
-                $this->putSimpleFlag('redis_operations_reduced');
-                break;
             case 'enable_local_cache_fallback':
-                $this->putSimpleFlag('cache_local_fallback');
-                break;
             case 'optimize_redis_queries':
-                $this->putSimpleFlag('redis_query_optimized');
-                break;
             case 'bypass_non_critical_redis':
-                $this->putSimpleFlag('redis_bypass_keys');
-                break;
             case 'enable_redis_read_only_mode':
-                $this->putSimpleFlag('redis_read_only');
-                break;
             case 'disable_redis_writes':
-                $this->putSimpleFlag('redis_writes_disabled');
-                break;
             case 'enable_complete_redis_bypass':
-                $this->putSimpleFlag('redis_bypassed');
+                $this->putSimpleFlag($action);
                 break;
 
             // Database相关动作
             case 'enable_query_optimization':
-                $this->putSimpleFlag('database_query_cache');
-                break;
             case 'prioritize_read_replicas':
-                $this->putSimpleFlag('database_read_preference');
-                break;
             case 'enable_frequent_query_caching':
-                $this->putSimpleFlag('database_query_cache_enabled');
-                break;
             case 'enable_database_read_only_mode':
-                $this->putSimpleFlag('database_read_only');
-                break;
             case 'disable_complex_queries':
-                $this->putSimpleFlag('complex_queries_disabled');
-                break;
             case 'force_query_caching':
-                $this->putSimpleFlag('database_force_cache');
-                break;
             case 'enable_database_emergency_mode':
-                $this->putSimpleFlag('database_emergency_mode');
-                break;
             case 'enable_cache_only_responses':
-                $this->putSimpleFlag('response_cache_only');
-                break;
             case 'enable_minimal_database_access':
-                $this->putSimpleFlag('database_minimal_access');
-                break;
             case 'enable_complete_database_bypass':
-                $this->putSimpleFlag('database_bypassed');
+                $this->putSimpleFlag($action);
                 break;
 
             default:
