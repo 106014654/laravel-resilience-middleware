@@ -1267,111 +1267,7 @@ class ServiceDegradationMiddleware
         ]);
     }
 
-    /**
-     * 执行逐级恢复：恢复指定级别的降级操作
-     * 
-     * @param int $fromLevel 当前降级级别
-     * @param int $toLevel 目标降级级别
-     * @param array $resourceStatus 资源状态
-     * @return bool 是否执行了恢复
-     */
-    protected function executeGradualRecovery(int $fromLevel, int $toLevel, array $resourceStatus): bool
-    {
-        $lastRecoveryAttempt = $this->getSimpleFlag('last_recovery_attempt', 0);
-        $recoveryInterval = config('resilience.service_degradation.recovery.recovery_step_interval', 30);
 
-        // 检查恢复间隔
-        if (now()->timestamp - $lastRecoveryAttempt < $recoveryInterval) {
-            return false; // 还未到恢复时间
-        }
-
-        // 验证恢复稳定性
-        $recoveryValidationTime = config('resilience.service_degradation.recovery.recovery_validation_time', 120);
-        if (!$this->validateRecoveryStability($resourceStatus, $recoveryValidationTime)) {
-            Log::info('Recovery validation failed, system not stable enough');
-            return false;
-        }
-
-        $strategies = config('resilience.service_degradation.strategies', []);
-        $recoveredActions = [];
-
-        try {
-            // 逐级恢复：从 fromLevel 降到 toLevel，恢复被移除的级别的操作
-            for ($level = $fromLevel; $level > $toLevel; $level--) {
-                foreach ($resourceStatus as $resource => $usage) {
-                    if (!isset($strategies[$resource])) {
-                        continue;
-                    }
-
-                    // 找到该资源在当前级别的策略
-                    foreach ($strategies[$resource] as $threshold => $strategy) {
-                        if (($strategy['level'] ?? 0) === $level) {
-                            $this->executeResourceRecoveryActions($resource, $strategy, $level);
-
-                            // 收集已恢复的actions
-                            if (isset($strategy['actions'])) {
-                                $recoveredActions = array_merge($recoveredActions, $strategy['actions']);
-                            }
-
-                            Log::info("Recovery level {$level} executed for resource: {$resource}", [
-                                'resource' => $resource,
-                                'level' => $level,
-                                'usage' => $usage,
-                                'actions_count' => count($strategy['actions'] ?? [])
-                            ]);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // 更新降级状态
-            if ($toLevel === 0) {
-                // 完全恢复
-                $this->forgetDegradationState('current_degradation_level');
-                $this->forgetDegradationState('current_degradation_state');
-                $this->forgetDegradationState('recovery_attempts_count');
-            } else {
-                // 部分恢复
-                $degradationState = [
-                    'current_level' => $toLevel,
-                    'from_level' => $fromLevel,
-                    'recovered_actions' => array_unique($recoveredActions),
-                    'resource_status' => $resourceStatus,
-                    'timestamp' => now()->timestamp
-                ];
-
-                $this->putDegradationState('current_degradation_level', $toLevel);
-                $this->putDegradationState('current_degradation_state', $degradationState);
-            }
-
-            $this->putDegradationState('last_recovery_attempt', now()->timestamp, now()->addHour());
-
-            Log::info("Gradual recovery executed", [
-                'from_level' => $fromLevel,
-                'to_level' => $toLevel,
-                'recovered_actions' => count(array_unique($recoveredActions)),
-                'resource_status' => $resourceStatus
-            ]);
-
-            return true;
-        } catch (\Exception $e) {
-            Log::error('Gradual recovery failed', [
-                'from_level' => $fromLevel,
-                'to_level' => $toLevel,
-                'error' => $e->getMessage(),
-                'resource_status' => $resourceStatus
-            ]);
-
-            return false;
-        }
-    }
-
-    /**
-     * 执行资源恢复操作
-     * 
-     * @param string $resource 资源名称
-     * @param array $strategy 策略配置
     /**
      * 计算降级信息 - 返回每个资源的详细降级信息
      * 
@@ -1625,90 +1521,6 @@ class ServiceDegradationMiddleware
         ]);
     }
 
-    /**
-     * 检查恢复条件 - 新版本：支持多资源恢复检查
-     */
-    protected function checkRecoveryConditions(array $resourceStatus): void
-    {
-        // 获取调试日志配置
-        $enableDetailedLogging = $this->config['monitoring']['enable_detailed_logging'] ?? false;
-
-        // 使用统一的缓存方法获取降级状态
-        $currentDegradationState = $this->getDegradationState('current_degradation_state');
-        $currentLevel = $this->getDegradationState('current_degradation_level', 0);
-
-        // 添加调试日志
-        if ($enableDetailedLogging) {
-            Log::debug('Recovery conditions check', [
-                'current_level' => $currentLevel,
-                'has_degradation_state' => !is_null($currentDegradationState),
-                'degradation_state_type' => gettype($currentDegradationState),
-                'degradation_state_size' => is_array($currentDegradationState) ? count($currentDegradationState) : 0,
-                'resource_status' => $resourceStatus
-            ]);
-        }
-
-        if ($currentLevel <= 0 || !$currentDegradationState) {
-            if ($enableDetailedLogging) {
-                Log::debug('No recovery needed', [
-                    'reason' => $currentLevel <= 0 ? 'no_degradation_level' : 'no_degradation_state',
-                    'current_level' => $currentLevel,
-                    'state_exists' => !is_null($currentDegradationState)
-                ]);
-            }
-            return; // 没有降级，无需恢复
-        }
-
-        $recoveryConfig = config('resilience.service_degradation.recovery', []);
-        $gradualRecovery = $recoveryConfig['gradual_recovery'] ?? true;
-        $recoveryThreshold = $recoveryConfig['recovery_threshold_buffer'] ?? 5;
-        $maxRecoveryAttempts = $recoveryConfig['max_recovery_attempts'] ?? 3;
-        $recoveryValidationTime = $recoveryConfig['recovery_validation_time'] ?? 120;
-
-        // 检查最大恢复尝试次数
-        $recoveryAttempts = $this->getDegradationState('recovery_attempts_count', 0);
-        if ($recoveryAttempts >= $maxRecoveryAttempts) {
-            Log::warning('Maximum recovery attempts reached', [
-                'attempts' => $recoveryAttempts,
-                'max_attempts' => $maxRecoveryAttempts,
-                'current_level' => $currentLevel
-            ]);
-
-            // 如果超过最大尝试次数，等待验证时间后重置尝试计数
-            $lastFailedRecovery = $this->getDegradationState('last_failed_recovery_time', 0);
-            if (now()->timestamp - $lastFailedRecovery >= $recoveryValidationTime) {
-                $this->putDegradationState('recovery_attempts_count', 0, now()->addHour());
-                Log::info('Recovery attempts counter reset after validation time');
-            } else {
-                return; // 还在验证等待期内，不进行恢复
-            }
-        }
-
-        // 检查每个资源的恢复条件
-        $recoverableResources = $this->checkResourceRecoveryConditions(
-            $resourceStatus,
-            $currentDegradationState,
-            $recoveryThreshold
-        );
-
-        if (!empty($recoverableResources)) {
-            // 检查恢复验证时间 - 确保系统在低负载状态下稳定运行足够时间
-            if (!$this->validateRecoveryStability($resourceStatus, $recoveryValidationTime)) {
-                Log::info('Recovery validation failed, system not stable enough', [
-                    'validation_time' => $recoveryValidationTime,
-                    'resource_status' => $resourceStatus,
-                    'recoverable_resources' => array_keys($recoverableResources)
-                ]);
-                return;
-            }
-
-            if ($gradualRecovery) {
-                $this->performGradualResourceRecovery($recoverableResources, $resourceStatus);
-            } else {
-                $this->performImmediateRecovery();
-            }
-        }
-    }
 
     /**
      * 检查各个资源的恢复条件
@@ -2021,67 +1833,6 @@ class ServiceDegradationMiddleware
         return true;
     }
 
-    /**
-     * 执行渐进式恢复
-     */
-    protected function performGradualRecovery(int $currentLevel, array $resourceStatus): void
-    {
-        $lastRecoveryAttempt = $this->getSimpleFlag('last_recovery_attempt', 0);
-        $recoveryInterval = config('resilience.service_degradation.recovery.recovery_step_interval', 30);
-
-        // 检查恢复间隔
-        if (now()->timestamp - $lastRecoveryAttempt < $recoveryInterval) {
-            return; // 还未到恢复时间
-        }
-
-        $newLevel = max(0, $currentLevel - 1);
-
-        // 增加恢复尝试计数
-        $recoveryAttempts = $this->getDegradationState('recovery_attempts_count', 0);
-        $recoveryAttempts++;
-        $this->putDegradationState('recovery_attempts_count', $recoveryAttempts, now()->addHour());
-
-        Log::info('Gradual recovery initiated', [
-            'from_level' => $currentLevel,
-            'to_level' => $newLevel,
-            'resource_status' => $resourceStatus,
-            'recovery_attempt' => $recoveryAttempts
-        ]);
-
-        try {
-            // 更新降级级别
-            $this->putDegradationState('current_degradation_level', $newLevel, now()->addMinutes(30));
-            $this->putDegradationState('last_recovery_attempt', now()->timestamp, now()->addHour());
-
-            // 执行恢复动作
-            $this->executeRecoveryActions($currentLevel, $newLevel);
-
-            // 如果恢复成功，重置恢复尝试计数并记录恢复事件
-            if ($newLevel === 0) {
-                $this->performImmediateRecovery();
-                $this->putDegradationState('recovery_attempts_count', 0, now()->addHour());
-                $this->logRecoveryEvent($currentLevel, $newLevel, $resourceStatus, 'complete');
-            } else {
-                $this->logRecoveryEvent($currentLevel, $newLevel, $resourceStatus, 'gradual');
-            }
-        } catch (\Exception $e) {
-            // 恢复失败，记录失败时间
-            $this->putDegradationState('last_failed_recovery_time', now()->timestamp, now()->addHours(2));
-
-            Log::error('Recovery attempt failed', [
-                'from_level' => $currentLevel,
-                'target_level' => $newLevel,
-                'attempt_number' => $recoveryAttempts,
-                'error' => $e->getMessage(),
-                'resource_status' => $resourceStatus
-            ]);
-
-            // 恢复失败时，回滚降级级别
-            $this->putDegradationState('current_degradation_level', $currentLevel, now()->addMinutes(30));
-
-            throw $e; // 重新抛出异常以便上层处理
-        }
-    }
 
     /**
      * 执行立即恢复
@@ -2944,7 +2695,7 @@ class ServiceDegradationMiddleware
         // 预留：后备策略恢复逻辑（如有需要可补充）
     }
 
-    protected function putSimpleFlag(string $key, $value, $ttl = null): bool
+    protected function putSimpleFlag(string $key, $value, $ttl = 3600): bool
     {
         return $this->putDegradationState($key, $value, $ttl);
     }
@@ -2960,13 +2711,13 @@ class ServiceDegradationMiddleware
     /**
      * 统一存储降级状态到 Redis
      */
-    protected function putDegradationState(string $key, $value, $ttl = null): bool
+    protected function putDegradationState(string $key, $value, $ttl = 3600): bool
     {
         $redisKey = self::CACHE_PREFIX . $this->getKeyWithIpPort($key);
         if ($ttl) {
-            return (bool)$this->redis->set($redisKey, serialize($value), 'EX', $this->convertTtlToSeconds($ttl));
+            return (bool)$this->redis->set($redisKey, $value, 'EX', $this->convertTtlToSeconds($ttl));
         } else {
-            return (bool)$this->redis->set($redisKey, serialize($value));
+            return (bool)$this->redis->set($redisKey, $value);
         }
     }
 
@@ -2977,7 +2728,7 @@ class ServiceDegradationMiddleware
     {
         $redisKey = self::CACHE_PREFIX . $this->getKeyWithIpPort($key);
         $val = $this->redis->get($redisKey);
-        return $val !== null ? unserialize($val) : $default;
+        return $val !== null ? $val : $default;
     }
 
     /**
@@ -3055,28 +2806,28 @@ class ServiceDegradationMiddleware
         // 根据action类型执行相应的恢复操作
         switch ($action) {
             // CPU 相关恢复
-            case 'disable_heavy_analytics':
+            case 'heavy_analytics_disabled':
                 $this->putSimpleFlag('heavy_analytics_disabled', false, now()->addMinutes(10));
                 break;
-            case 'reduce_log_verbosity':
+            case 'log_verbosity_reduced':
                 $this->putSimpleFlag('log_verbosity_reduced', false, now()->addMinutes(10));
                 break;
-            case 'disable_background_jobs':
+            case 'background_jobs_disabled':
                 $this->putSimpleFlag('background_jobs_disabled', false, now()->addMinutes(10));
                 break;
-            case 'cache_aggressive_mode':
+            case 'cache_aggressive':
                 $this->putSimpleFlag('cache_aggressive', false, now()->addMinutes(10));
                 break;
-            case 'disable_recommendations_engine':
+            case 'recommendations_disabled':
                 $this->putSimpleFlag('recommendations_disabled', false, now()->addMinutes(10));
                 break;
-            case 'disable_real_time_features':
+            case 'realtime_disabled':
                 $this->putSimpleFlag('realtime_disabled', false, now()->addMinutes(10));
                 $this->putSimpleFlag('websockets_enabled', true, now()->addMinutes(10));
                 $this->putSimpleFlag('broadcasting_enabled', true, now()->addMinutes(10));
                 $this->putSimpleFlag('realtime_features', true, now()->addMinutes(10));
                 break;
-            case 'minimal_response_processing':
+            case 'response_minimal':
                 $this->putSimpleFlag('response_minimal', false, now()->addMinutes(10));
                 $this->putSimpleFlag('response_format', 'full', now()->addMinutes(10));
                 break;
@@ -3084,57 +2835,57 @@ class ServiceDegradationMiddleware
                 $this->putSimpleFlag('emergency_cpu_mode', false, now()->addMinutes(10));
                 $this->putSimpleFlag('queue_sync', true, now()->addMinutes(10));
                 break;
-            case 'static_responses_only':
+            case 'response_static_only':
                 $this->putSimpleFlag('response_static_only', false, now()->addMinutes(10));
                 $this->putSimpleFlag('cache_strategy', 'dynamic', now()->addMinutes(10));
                 break;
 
             // Memory 相关恢复
-            case 'disable_file_processing':
+            case 'file_processing_disabled':
                 $this->putSimpleFlag('file_processing_disabled', false, now()->addMinutes(10));
                 $this->putSimpleFlag('filesystems_uploads_enabled', true, now()->addMinutes(10));
                 $this->putSimpleFlag('image_processing', true, now()->addMinutes(10));
                 $this->putSimpleFlag('file_processing', true, now()->addMinutes(10));
                 break;
-            case 'minimal_object_creation':
+            case 'minimal_objects':
                 $this->putSimpleFlag('minimal_object_creation', false, now()->addMinutes(10));
                 $this->putSimpleFlag('object_pooling_enabled', false, now()->addMinutes(10));
                 $this->putSimpleFlag('minimal_objects', false, now()->addMinutes(10));
                 break;
 
             // Redis 相关恢复
-            case 'reduce_redis_operations':
+            case 'redis_operations_reduced':
                 $this->putSimpleFlag('redis_operations_reduced', false, now()->addMinutes(10));
                 break;
-            case 'enable_local_cache_fallback':
+            case 'cache_local_fallback':
                 $this->putSimpleFlag('cache_local_fallback', false, now()->addMinutes(10));
                 $this->putSimpleFlag('cache_fallback', 'redis', now()->addMinutes(10));
                 break;
-            case 'redis_read_only_mode':
+            case 'redis_read_only':
                 $this->putSimpleFlag('redis_read_only', false, now()->addMinutes(10));
                 $this->putSimpleFlag('database_redis_read_only', false, now()->addMinutes(10));
                 break;
-            case 'disable_redis_writes':
+            case 'redis_writes_disabled':
                 $this->putSimpleFlag('redis_writes_disabled', false, now()->addMinutes(10));
                 $this->putSimpleFlag('cache_redis_read_only', false, now()->addMinutes(10));
                 break;
 
             // Database 相关恢复
-            case 'enable_read_only_mode':
+            case 'database_read_only':
                 $this->putSimpleFlag('database_read_only', false, now()->addMinutes(10));
                 break;
-            case 'disable_complex_queries':
+            case 'complex_queries_disabled':
                 $this->putSimpleFlag('database_complex_queries_disabled', false, now()->addMinutes(10));
                 $this->putSimpleFlag('complex_queries_disabled', false, now()->addMinutes(10));
                 break;
             case 'database_emergency_mode':
                 $this->putSimpleFlag('database_emergency_mode', false, now()->addMinutes(10));
                 break;
-            case 'minimal_database_access':
+            case 'database_minimal_access':
                 $this->putSimpleFlag('database_minimal_access', false, now()->addMinutes(10));
                 $this->putSimpleFlag('database_essential_queries_only', false, now()->addMinutes(10));
                 break;
-            case 'complete_database_bypass':
+            case 'database_bypassed':
                 $this->putSimpleFlag('database_bypassed', false, now()->addMinutes(10));
                 break;
 
