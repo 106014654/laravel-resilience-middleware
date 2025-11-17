@@ -166,6 +166,16 @@ class ServiceDegradationMiddleware
      */
     protected function executeRecovery(array $previousLevels, array $currentLevels, array $resourceStatus): void
     {
+        $recoveryConfig = config('resilience.service_degradation.recovery', []);
+
+        // 检查是否启用渐进式恢复
+        if ($recoveryConfig['gradual_recovery'] ?? true) {
+            $validatedRecovery = $this->validateRecoveryStability($previousLevels, $currentLevels, $resourceStatus, $recoveryConfig);
+            if (!$validatedRecovery) {
+                return; // 不满足恢复稳定性条件，跳过恢复
+            }
+        }
+
         $recovered = false;
 
         foreach ($previousLevels as $resource => $previousLevel) {
@@ -183,11 +193,15 @@ class ServiceDegradationMiddleware
             $this->putDegradationState('resource_degradation_levels', $currentLevels);
             $maxLevel = max(array_merge([0], array_values($currentLevels)));
 
+            // 只有当所有资源的降级级别都为0时，才执行完整恢复
             if ($maxLevel === 0) {
                 $this->performCompleteRecovery();
             } else {
                 $this->putDegradationState('current_degradation_level', $maxLevel);
             }
+
+            // 记录恢复时间，用于后续稳定性校验
+            $this->recordRecoveryTime();
         }
     }
 
@@ -225,6 +239,116 @@ class ServiceDegradationMiddleware
                 }
             }
         }
+    }
+
+    /**
+     * 验证恢复稳定性 - 防止频繁的降级级别切换
+     */
+    protected function validateRecoveryStability(array $previousLevels, array $currentLevels, array $resourceStatus, array $recoveryConfig): bool
+    {
+        // 检查恢复步骤间隔
+        $stepInterval = $recoveryConfig['recovery_step_interval'] ?? 30;
+        $lastRecoveryTime = $this->getDegradationState('last_recovery_time', 0);
+        $currentTime = time();
+
+        if ($currentTime - $lastRecoveryTime < $stepInterval) {
+            Log::info('[Resilience] 恢复校验: 距离上次恢复不足间隔({interval}s)，跳过本次恢复', ['interval' => $stepInterval, 'last' => $lastRecoveryTime, 'now' => $currentTime]);
+            return false; // 间隔时间不够，不允许恢复
+        }
+
+        // 检查恢复阈值缓冲区
+        $thresholdBuffer = $recoveryConfig['recovery_threshold_buffer'] ?? 5;
+        $thresholds = config('resilience.service_degradation.resource_thresholds', []);
+        $bufferCheckPassed = true;
+
+        foreach ($previousLevels as $resource => $previousLevel) {
+            $currentLevel = $currentLevels[$resource] ?? 0;
+            $currentUsage = $resourceStatus[$resource] ?? 0;
+
+            if ($previousLevel > $currentLevel && isset($thresholds[$resource])) {
+                // 找到当前级别对应的阈值
+                $levelThreshold = null;
+                foreach ($thresholds[$resource] as $threshold => $level) {
+                    if ($level === $previousLevel) {
+                        $levelThreshold = $threshold;
+                        break;
+                    }
+                }
+
+                // 应用缓冲区：需要低于阈值-缓冲区才能恢复
+                if ($levelThreshold !== null && $currentUsage > ($levelThreshold - $thresholdBuffer)) {
+                    Log::info('[Resilience] 恢复校验: 资源{resource}当前值{usage}高于缓冲区({buffer})，重置稳定计时', [
+                        'resource' => $resource,
+                        'usage' => $currentUsage,
+                        'buffer' => $levelThreshold - $thresholdBuffer,
+                        'level' => $previousLevel
+                    ]);
+                    $bufferCheckPassed = false;
+                    break; // 任意一个资源不满足缓冲区条件就失败
+                }
+            }
+        }
+
+        if (!$bufferCheckPassed) {
+            // 不满足缓冲区条件，重置稳定状态开始时间
+            $this->forgetDegradationState('stable_state_start_time');
+            return false; // 还在缓冲区内，不允许恢复
+        }
+
+        // 检查恢复尝试次数
+        $maxAttempts = $recoveryConfig['max_recovery_attempts'] ?? 3;
+        $recentAttempts = $this->getDegradationState('recovery_attempts_count', 0);
+        $attemptsResetTime = $this->getDegradationState('recovery_attempts_reset_time', 0);
+
+        // 每小时重置尝试计数
+        if ($currentTime - $attemptsResetTime > 3600) {
+            Log::info('[Resilience] 恢复校验: 超过1小时，重置恢复尝试计数');
+            $recentAttempts = 0;
+            $this->putDegradationState('recovery_attempts_reset_time', $currentTime);
+        }
+
+        if ($recentAttempts >= $maxAttempts) {
+            Log::warning('[Resilience] 恢复校验: 超过最大恢复尝试次数({max})，跳过本次恢复', ['max' => $maxAttempts, 'count' => $recentAttempts]);
+            return false; // 超过最大尝试次数
+        }
+
+        // 检查恢复验证时间
+        $validationTime = $recoveryConfig['recovery_validation_time'] ?? 120;
+        $stableStateStart = $this->getDegradationState('stable_state_start_time', 0);
+
+        // 如果是第一次检测到可恢复状态，记录开始时间
+        if ($stableStateStart === 0) {
+            Log::info('[Resilience] 恢复校验: 首次满足恢复条件，记录稳定期起点', ['now' => $currentTime]);
+            $this->putDegradationState('stable_state_start_time', $currentTime);
+            return false; // 需要等待稳定验证期
+        }
+
+        // 检查是否已经稳定足够长时间
+        if ($currentTime - $stableStateStart < $validationTime) {
+            Log::info('[Resilience] 恢复校验: 稳定期未满({need}s)，已稳定{stable}s', [
+                'need' => $validationTime,
+                'stable' => $currentTime - $stableStateStart
+            ]);
+            return false; // 稳定时间不够
+        }
+
+        // 更新恢复尝试计数
+        $this->putDegradationState('recovery_attempts_count', $recentAttempts + 1);
+
+        Log::info('[Resilience] 恢复校验: 通过所有稳定性检查，允许恢复');
+        return true; // 通过所有稳定性检查，允许恢复
+    }
+
+    /**
+     * 记录恢复时间
+     */
+    protected function recordRecoveryTime(): void
+    {
+        $currentTime = time();
+        $this->putDegradationState('last_recovery_time', $currentTime);
+
+        // 重置稳定状态开始时间，为下次恢复做准备
+        $this->forgetDegradationState('stable_state_start_time');
     }
 
     /**
@@ -307,38 +431,42 @@ class ServiceDegradationMiddleware
             'current_degradation_level',
             'current_degradation_state',
             'resource_degradation_levels',
-            'heavy_analytics_disabled',
-            'log_verbosity_reduced',
-            'background_jobs_disabled',
-            'cache_aggressive',
-            'recommendations_disabled',
-            'realtime_disabled',
-            'response_minimal',
+            // CPU相关动作标识
+            'disable_heavy_analytics',
+            'reduce_log_verbosity',
+            'disable_background_jobs',
+            'enable_aggressive_caching',
+            'disable_recommendations_engine',
+            'disable_realtime_features',
+            'enable_minimal_response_processing',
             'gc_forced',
-            'emergency_cpu_mode',
-            'response_static_only',
-            'cache_size_reduction',
-            'file_processing_disabled',
-            'minimal_object_creation',
-            'emergency_memory_cleanup_performed',
-            'request_too_large',
-            'redis_operations_reduced',
-            'cache_local_fallback',
-            'redis_query_optimized',
-            'redis_bypass_keys',
-            'redis_read_only',
-            'redis_writes_disabled',
-            'redis_bypassed',
-            'database_query_cache',
-            'database_read_preference',
-            'database_query_cache_enabled',
-            'database_read_only',
-            'complex_queries_disabled',
-            'database_force_cache',
-            'database_emergency_mode',
-            'response_cache_only',
-            'database_minimal_access',
-            'database_bypassed'
+            'enable_emergency_cpu_mode',
+            'enable_static_responses_only',
+            // Memory相关动作标识
+            'reduce_cache_size',
+            'disable_file_processing',
+            'enable_minimal_object_creation',
+            'perform_emergency_memory_cleanup',
+            'enable_large_request_rejection',
+            // Redis相关动作标识
+            'reduce_redis_operations',
+            'enable_local_cache_fallback',
+            'optimize_redis_queries',
+            'bypass_non_critical_redis',
+            'enable_redis_read_only_mode',
+            'disable_redis_writes',
+            'enable_complete_redis_bypass',
+            // Database相关动作标识
+            'enable_query_optimization',
+            'prioritize_read_replicas',
+            'enable_frequent_query_caching',
+            'enable_database_read_only_mode',
+            'disable_complex_queries',
+            'force_query_caching',
+            'enable_database_emergency_mode',
+            'enable_cache_only_responses',
+            'enable_minimal_database_access',
+            'enable_complete_database_bypass'
         ];
 
         foreach ($forgetKeys as $key) {
