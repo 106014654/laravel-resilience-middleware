@@ -58,63 +58,9 @@ php artisan vendor:publish --provider="OneLap\LaravelResilienceMiddleware\Resili
 php artisan vendor:publish --provider="OneLap\LaravelResilienceMiddleware\ResilienceMiddlewareServiceProvider" --tag="resilience-examples"
 ```
 
-### 3. 注册中间件
 
-在 `app/Http/Kernel.php` 中注册中间件：
 
-```php
-protected $middlewareAliases = [
-    // ... 其他中间件
-    
-    // 韧性中间件 - 单独使用
-    'rate.limit' => \OneLap\LaravelResilienceMiddleware\Middleware\RateLimitingMiddleware::class,
-    'circuit.breaker' => \OneLap\LaravelResilienceMiddleware\Middleware\CircuitBreakerMiddleware::class,
-    'service.degradation' => \OneLap\LaravelResilienceMiddleware\Middleware\ServiceDegradationMiddleware::class,
-];
-
-protected $middlewareGroups = [
-    // 韧性中间件组合 - 推荐使用
-    'resilience' => [
-        \OneLap\LaravelResilienceMiddleware\Middleware\RateLimitingMiddleware::class,
-        \OneLap\LaravelResilienceMiddleware\Middleware\CircuitBreakerMiddleware::class,
-        \OneLap\LaravelResilienceMiddleware\Middleware\ServiceDegradationMiddleware::class,
-    ],
-    
-    // 轻量级保护
-    'resilience.light' => [
-        \OneLap\LaravelResilienceMiddleware\Middleware\RateLimitingMiddleware::class,
-    ],
-    
-    // 核心保护
-    'resilience.core' => [
-        \OneLap\LaravelResilienceMiddleware\Middleware\RateLimitingMiddleware::class,
-        \OneLap\LaravelResilienceMiddleware\Middleware\ServiceDegradationMiddleware::class,
-    ],
-];
-```
-
-### 4. 环境配置
-
-在 `.env` 文件中添加基础配置：
-
-```env
-# 启用韧性中间件
-RESILIENCE_RATE_LIMIT_ENABLED=true
-RESILIENCE_CIRCUIT_BREAKER_ENABLED=true
-RESILIENCE_DEGRADATION_ENABLED=true
-
-# 监控配置
-RESILIENCE_CPU_MONITOR=true
-RESILIENCE_MEMORY_MONITOR=true
-RESILIENCE_REDIS_MONITOR=true
-RESILIENCE_DB_MONITOR=true
-
-# 系统阈值（可选，有默认值）
-RESILIENCE_CPU_HIGH=85.0
-RESILIENCE_MEMORY_HIGH=85.0
-```
-
-### 5. 验证配置
+### 3. 验证配置
 
 使用内置命令验证配置是否正确加载：
 
@@ -142,111 +88,6 @@ php artisan resilience:config-status
 > - **配置覆盖顺序**：用户配置 > 环境变量 > 包默认配置
 > - Laravel 的 `config()` 函数会自动读取主项目的配置文件
 
-## 🚀 快速开始
-
-### 1. 基础保护（推荐新手）
-
-最简单的方式是使用预配置的中间件组：
-
-```php
-// 完整保护 - 适用于关键业务接口
-Route::middleware('resilience')->group(function () {
-    Route::post('/api/payment', 'PaymentController@process');
-    Route::get('/api/orders', 'OrderController@index');
-});
-
-// 轻量级保护 - 适用于一般API
-Route::middleware('resilience.light')->group(function () {
-    Route::get('/api/users', 'UserController@index');
-    Route::get('/api/products', 'ProductController@index');
-});
-```
-
-### 2. 单个中间件使用
-
-```php
-// 仅使用限流保护
-Route::get('/api/public/data', 'DataController@index')
-    ->middleware('rate.limit');
-
-// 仅使用熔断器保护
-Route::get('/api/external-service', 'ExternalController@proxy')
-    ->middleware('circuit.breaker:external-api');
-
-// 仅使用服务降级
-Route::get('/api/recommendations', 'RecommendationController@index')
-    ->middleware('service.degradation:auto');
-```
-
-### 3. 自定义参数配置
-
-```php
-// 自定义限流参数：滑动窗口，每分钟100次
-Route::get('/api/search', 'SearchController@index')
-    ->middleware('rate.limit:sliding_window,100,1');
-
-// 自定义熔断器参数：失败5次后熔断60秒
-Route::get('/api/payment', 'PaymentController@gateway')
-    ->middleware('circuit.breaker:payment-gateway');
-
-// 自定义降级模式：透传模式，在控制器中检查降级状态
-Route::get('/api/complex-data', 'ComplexController@index')
-    ->middleware('service.degradation:passthrough');
-```
-
-### 4. 在控制器中处理降级
-
-当使用透传模式时，可以在控制器中检查降级状态：
-
-```php
-<?php
-
-namespace App\Http\Controllers\Api;
-
-use Illuminate\Http\Request;
-use App\Http\Controllers\Controller;
-
-class ProductController extends Controller
-{
-    public function index(Request $request)
-    {
-        // 检查是否处于降级状态
-        $isDegraded = $request->attributes->get('degraded', false);
-        $degradationLevel = $request->attributes->get('degradation_level', 0);
-        
-        if ($isDegraded) {
-            return $this->handleDegradedRequest($degradationLevel);
-        }
-        
-        return $this->getFullProductData();
-    }
-    
-    private function handleDegradedRequest($level)
-    {
-        switch ($level) {
-            case 1:
-                // 轻度降级：返回缓存数据
-                return cache()->remember('products.basic', 300, function () {
-                    return $this->getBasicProductData();
-                });
-                
-            case 2:
-                // 中度降级：返回简化数据
-                return $this->getSimplifiedProductData();
-                
-            case 3:
-                // 重度降级：返回最小数据
-                return response()->json([
-                    'message' => '服务临时简化，请稍后重试',
-                    'data' => []
-                ]);
-                
-            default:
-                return $this->getFullProductData();
-        }
-    }
-}
-```
 
 ## ⚙️ 详细配置
 
@@ -255,6 +96,8 @@ class ProductController extends Controller
 配置文件 `config/resilience.php` 采用分层配置结构：
 
 ```php
+<?php
+
 return [
     /*
     |--------------------------------------------------------------------------
@@ -386,15 +229,14 @@ return [
         'enabled' => env('RESILIENCE_DEGRADATION_ENABLED', true),
 
         /*
-        | 监控和日志配置
+        |--------------------------------------------------------------------------
+        | 缓存标签配置
+        |--------------------------------------------------------------------------
+        | 配置缓存标签清理的兼容性选项
         */
-        'monitoring' => [
-            'enable_detailed_logging' => env('RESILIENCE_SD_DETAILED_LOG', false), // 是否启用详细日志
-            'log_degradation_events' => env('RESILIENCE_SD_LOG_EVENTS', true),     // 是否记录降级事件
-            'log_recovery_events' => env('RESILIENCE_SD_LOG_RECOVERY', true),      // 是否记录恢复事件  
-            'log_strategy_execution' => env('RESILIENCE_SD_LOG_STRATEGY', false),  // 是否记录策略执行详情
-            'log_resource_monitoring' => env('RESILIENCE_SD_LOG_RESOURCE', false), // 是否记录资源监控数据
-            'metrics_collection' => env('RESILIENCE_SD_METRICS', true),           // 是否收集降级指标
+        'cache' => [
+            // 缓存键前缀，确保不同模块间的缓存不冲突
+            'prefix' => env('RESILIENCE_CACHE_PREFIX', 'resilience:'),
         ],
 
         /*
@@ -467,9 +309,9 @@ return [
                 95 => 4,  // CPU 95% 触发4级降级（紧急）
             ],
             'memory' => [
-                75 => 1,  // 内存 75% 触发1级降级（内存更敏感）
-                85 => 2,  // 内存 85% 触发2级降级
-                92 => 3,  // 内存 92% 触发3级降级
+                10 => 1,  // 内存 75% 触发1级降级（内存更敏感）
+                15 => 2,  // 内存 85% 触发2级降级
+                20 => 3,  // 内存 92% 触发3级降级
                 96 => 4,  // 内存 96% 触发4级降级（紧急）
             ],
             'redis' => [
@@ -488,42 +330,27 @@ return [
 
 
         'strategies' => [
-            // CPU 降级策略
-            'cpu' => [
-                70 => [
+            // Memory 内存降级策略
+            'memory' => [
+                10 => [
                     'level' => 1,
                     'actions' => [
-                        'disable_heavy_analytics',    // 禁用重度分析功能，释放CPU资源
-                        'reduce_log_verbosity',       // 降低日志详细程度，减少I/O操作
-                        'reject_non_essential_requests',    // 拒绝非必要请求
-
-                        'reduce_cache_size_20_percent',  // 随机清理指定百分比的临时缓存,优先清理 `temp`, `analytics`, `reports` 标签的缓存
-
-                        'disable_file_processing', // 禁用文件处理功能
-
-                        'reject_large_requests', // 拒绝大型请求
-
-                        'reduce_redis_operations', // 减少redis 操作
-
-                        'redis_read_only_mode', // redis只读模式
-
-                        'complete_redis_bypass', // 完全弃用redis
+                        'heavy_analytics_disabled', // 禁用图片处理功能
                     ],
-                    'performance_optimizations' => [],
-                    'memory_management' => [
-                        'cache_cleanup' => 'non_essential', // 清理非必要缓存 'temp', 'analytics' 标签
-
+                ],
+                15 => [
+                    'level' => 2,
+                    'actions' => [
+                        'cache_aggressive', // 禁用文件处理功能
                     ],
-                    'fallback_strategies' => [],
-                    'database_strategies' => [
-                        'query_strategy' => 'no_database_access', // 数据库查询不可用
-                        'cache_strategy' => 'mandatory_caching', // 强制缓存所有查询
-                    ]
+                ],
+                20 => [
+                    'level' => 3,
+                    'actions' => [
+                        'realtime_disabled', // 拒绝大型请求
+                    ],
                 ],
             ],
-
-            // Memory 内存降级策略
-            'memory' => [],
 
             // Redis 降级策略
             'redis' => [],
@@ -547,7 +374,6 @@ return [
             'gradual_recovery' => true,              // 启用渐进式恢复，避免瞬间切换造成系统震荡
             'recovery_step_interval' => 30,          // 恢复步骤间隔30秒，给系统稳定时间
             'recovery_threshold_buffer' => 5,        // 恢复阈值缓冲5%，如70%降级需65%才恢复
-            'max_recovery_attempts' => 3,            // 最大恢复尝试3次，防止异常情况下的无限重试
             'recovery_validation_time' => 120,       // 恢复验证时间120秒，确保系统稳定后才完全恢复
         ],
 
@@ -562,6 +388,7 @@ return [
     ],
 ];
 
+
 ```
 
 ### 限流中间件参数
@@ -570,17 +397,17 @@ return [
 
 ```php
 // 滑动窗口策略（推荐）- 平滑限流
-Route::middleware('rate.limit:sliding_window,100,1')->group(function () {
+Route::middleware('resilience.rate-limit:sliding_window,100,1')->group(function () {
     // 每分钟最多100次请求
 });
 
 // 固定窗口策略 - 简单高效
-Route::middleware('rate.limit:fixed_window,50,1')->group(function () {
+Route::middleware('resilience.rate-limit:fixed_window,50,1')->group(function () {
     // 每分钟重置，最多50次请求
 });
 
 // 令牌桶策略 - 允许突发流量
-Route::middleware('rate.limit:token_bucket,30,1')->group(function () {
+Route::middleware('resilience.rate-limit:token_bucket,30,1')->group(function () {
     // 每分钟30个令牌，可突发处理
 });
 ```
@@ -611,119 +438,16 @@ Route::middleware('circuit.breaker:user-service')->group(function () {
 
 ### 服务降级参数
 
-支持自动和手动两种降级模式：
+支持两种降级模式 auto 、block：
 
 ```php
-// 自动降级 - 根据系统压力自动调整
-Route::middleware('service.degradation:auto')->group(function () {
-    // 系统会根据CPU、内存等指标自动降级
-});
-
-// 手动降级 - 指定降级级别和处理方式
-Route::middleware('service.degradation:2:passthrough')->group(function () {
-    // 强制2级降级，在控制器中处理
+// 自动降级 - 根据系统压力自动调整 风险等级 >= 3
+Route::middleware('resilience.service-degradation:auto')->group(function () {
 });
 
 // 阻塞模式 - 直接返回降级响应
-Route::middleware('service.degradation:3:block')->group(function () {
-    // 3级降级，直接返回预设响应
+Route::middleware('resilience.service-degradation:block')->group(function () {
 });
-```
-
-**五层降级架构：**
-
-| 级别 | 名称 | 处理方式 | 适用场景 |
-|------|------|----------|----------|
-| 1 | Actions | 禁用非核心功能 | CPU使用率偏高 |
-| 2 | Performance | 降低响应质量 | 内存使用率偏高 |
-| 3 | Memory | 减少内存占用 | 系统资源紧张 |
-| 4 | Fallback | 返回默认数据 | 依赖服务异常 |
-| 5 | Database | 禁用数据库查询 | 数据库压力过大 |
-
-**降级模式：**
-- `block`: 阻塞模式 - 直接返回降级响应
-- `passthrough`: 透传模式 - 设置降级上下文，继续执行
-
-## 🔍 系统监控
-
-### 独立资源监控
-
-本中间件采用独立资源监控架构，分别监控CPU、内存、Redis和MySQL的使用情况，特别适合分布式系统：
-
-```php
-use OneLap\LaravelResilienceMiddleware\Facades\SystemMonitor;
-
-// 获取各项资源使用率
-$cpuUsage = SystemMonitor::getCpuUsage();           // CPU使用率
-$memoryUsage = SystemMonitor::getMemoryUsage();     // 内存使用率
-$redisUsage = SystemMonitor::getRedisUsage();       // Redis连接/内存使用率
-$mysqlUsage = SystemMonitor::getMysqlUsage();       // MySQL连接使用率
-```
-
-
-## 💡 高级用法
-
-### 降级上下文处理
-
-中间件会设置降级上下文信息，支持两种获取方式：
-
-```php
-public function index(Request $request)
-{
-    // 方式1：通过请求属性获取（推荐）
-    $isDegraded = $request->attributes->get('degraded', false);
-    $degradationLevel = $request->attributes->get('degradation_level', 0);
-    $systemPressure = $request->attributes->get('system_pressure', 'low');
-    
-    // 方式2：通过请求头获取
-    $degradationLevel = $request->header('X-Degradation-Level');
-    $degradationMode = $request->header('X-Degradation-Mode');
-    $systemPressure = $request->header('X-System-Pressure');
-    
-    if ($isDegraded) {
-        // 根据降级级别返回不同数据
-        switch ($degradationLevel) {
-            case 1:
-                return $this->getCachedData();
-            case 2:
-                return $this->getSimplifiedData();
-            case 3:
-                return $this->getMinimalData();
-        }
-    }
-    
-    return $this->getFullData();
-}
-```
-
-### 自定义中间件组
-
-创建适合业务场景的中间件组合：
-
-```php
-// app/Http/Kernel.php
-protected $middlewareGroups = [
-    // 轻量级API保护
-    'api.light' => [
-        'throttle:api',
-        'rate.limit:sliding_window,100,1',
-    ],
-    
-    // 标准API保护
-    'api.standard' => [
-        'throttle:api', 
-        'rate.limit:sliding_window,60,1',
-        'circuit.breaker:api-service',
-    ],
-    
-    // 关键业务保护
-    'api.critical' => [
-        'throttle:api',
-        'rate.limit:token_bucket,30,1',
-        'circuit.breaker:critical-service,3,120,5',
-        'service.degradation:auto',
-    ],
-];
 ```
 
 ## 兼容性

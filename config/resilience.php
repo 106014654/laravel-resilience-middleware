@@ -131,18 +131,6 @@ return [
         'enabled' => env('RESILIENCE_DEGRADATION_ENABLED', true),
 
         /*
-        | 监控和日志配置
-        */
-        'monitoring' => [
-            'enable_detailed_logging' => env('RESILIENCE_SD_DETAILED_LOG', false), // 是否启用详细日志
-            'log_degradation_events' => env('RESILIENCE_SD_LOG_EVENTS', true),     // 是否记录降级事件
-            'log_recovery_events' => env('RESILIENCE_SD_LOG_RECOVERY', true),      // 是否记录恢复事件  
-            'log_strategy_execution' => env('RESILIENCE_SD_LOG_STRATEGY', false),  // 是否记录策略执行详情
-            'log_resource_monitoring' => env('RESILIENCE_SD_LOG_RESOURCE', false), // 是否记录资源监控数据
-            'metrics_collection' => env('RESILIENCE_SD_METRICS', true),           // 是否收集降级指标
-        ],
-
-        /*
         |--------------------------------------------------------------------------
         | 缓存标签配置
         |--------------------------------------------------------------------------
@@ -151,15 +139,6 @@ return [
         'cache' => [
             // 缓存键前缀，确保不同模块间的缓存不冲突
             'prefix' => env('RESILIENCE_CACHE_PREFIX', 'resilience:'),
-
-            // 是否允许在标签清理失败时回退到全局清理（谨慎使用）
-            'fallback_to_global_flush' => env('RESILIENCE_CACHE_FALLBACK_GLOBAL', false),
-
-            // 针对不同缓存驱动的标签支持检测
-            'tag_support_drivers' => ['redis', 'memcached', 'array'],
-
-            // 在不支持标签的驱动上，是否尝试按键名模式清理
-            'enable_pattern_cleanup' => env('RESILIENCE_CACHE_PATTERN_CLEANUP', true),
         ],
 
         /*
@@ -299,14 +278,5 @@ return [
             'recovery_threshold_buffer' => 5,        // 恢复阈值缓冲5%，如70%降级需65%才恢复
             'recovery_validation_time' => 120,       // 恢复验证时间120秒，确保系统稳定后才完全恢复
         ],
-
-        /*
-        |--------------------------------------------------------------------------
-        | 非必要请求路径配置
-        |--------------------------------------------------------------------------
-        | 当系统压力过大时，这些路径的请求会被标记为非必要请求可能被拒绝
-        */
-        'non_essential_paths' => [],
-
     ],
 ];
