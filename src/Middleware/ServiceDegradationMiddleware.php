@@ -296,20 +296,12 @@ class ServiceDegradationMiddleware
         }
 
         // 检查恢复尝试次数
-        $maxAttempts = $recoveryConfig['max_recovery_attempts'] ?? 3;
-        $recentAttempts = $this->getDegradationState('recovery_attempts_count', 0);
         $attemptsResetTime = $this->getDegradationState('recovery_attempts_reset_time', 0);
 
         // 每小时重置尝试计数
         if ($currentTime - $attemptsResetTime > 3600) {
             Log::info('[Resilience] 恢复校验: 超过1小时，重置恢复尝试计数');
-            $recentAttempts = 0;
             $this->putDegradationState('recovery_attempts_reset_time', $currentTime);
-        }
-
-        if ($recentAttempts >= $maxAttempts) {
-            Log::warning('[Resilience] 恢复校验: 超过最大恢复尝试次数({max})，跳过本次恢复', ['max' => $maxAttempts, 'count' => $recentAttempts]);
-            return false; // 超过最大尝试次数
         }
 
         // 检查恢复验证时间
@@ -331,9 +323,6 @@ class ServiceDegradationMiddleware
             ]);
             return false; // 稳定时间不够
         }
-
-        // 更新恢复尝试计数
-        $this->putDegradationState('recovery_attempts_count', $recentAttempts + 1);
 
         Log::info('[Resilience] 恢复校验: 通过所有稳定性检查，允许恢复');
         return true; // 通过所有稳定性检查，允许恢复

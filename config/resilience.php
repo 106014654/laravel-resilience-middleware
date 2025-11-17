@@ -253,40 +253,6 @@ return [
 
 
         'strategies' => [
-            // CPU 降级策略
-            'cpu' => [
-                70 => [
-                    'level' => 1,
-                    'actions' => [
-                        'disable_heavy_analytics',    // 禁用重度分析功能，释放CPU资源
-                        'reduce_log_verbosity',       // 降低日志详细程度，减少I/O操作
-                        'reject_non_essential_requests',    // 拒绝非必要请求
-
-                        'reduce_cache_size_20_percent',  // 随机清理指定百分比的临时缓存,优先清理 `temp`, `analytics`, `reports` 标签的缓存
-
-                        'disable_file_processing', // 禁用文件处理功能
-
-                        'reject_large_requests', // 拒绝大型请求
-
-                        'reduce_redis_operations', // 减少redis 操作
-
-                        'redis_read_only_mode', // redis只读模式
-
-                        'complete_redis_bypass', // 完全弃用redis
-                    ],
-                    'performance_optimizations' => [],
-                    'memory_management' => [
-                        'cache_cleanup' => 'non_essential', // 清理非必要缓存 'temp', 'analytics' 标签
-
-                    ],
-                    'fallback_strategies' => [],
-                    'database_strategies' => [
-                        'query_strategy' => 'no_database_access', // 数据库查询不可用
-                        'cache_strategy' => 'mandatory_caching', // 强制缓存所有查询
-                    ]
-                ],
-            ],
-
             // Memory 内存降级策略
             'memory' => [
                 10 => [
@@ -331,7 +297,6 @@ return [
             'gradual_recovery' => true,              // 启用渐进式恢复，避免瞬间切换造成系统震荡
             'recovery_step_interval' => 30,          // 恢复步骤间隔30秒，给系统稳定时间
             'recovery_threshold_buffer' => 5,        // 恢复阈值缓冲5%，如70%降级需65%才恢复
-            'max_recovery_attempts' => 3,            // 最大恢复尝试3次，防止异常情况下的无限重试
             'recovery_validation_time' => 120,       // 恢复验证时间120秒，确保系统稳定后才完全恢复
         ],
 

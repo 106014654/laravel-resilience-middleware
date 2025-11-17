@@ -1,42 +1,39 @@
-# 服务降级 Redis Key 分层与用途一览表
+# 服务降级 Redis Key（actions 层）一览表（与代码完全对应）
 
-| Key（字段名）                      | 分层/类型                  | 说明/用途                                                                                   | 实现建议/可操作项 |
-|------------------------------------|----------------------------|---------------------------------------------------------------------------------------------|-------------------|
-| heavy_analytics_disabled           | actions                    | 禁用重型分析功能                                                                             | 禁用如大数据分析、复杂报表、行为追踪等高消耗分析功能，减少系统负载 |
-| log_verbosity_reduced              | actions                    | 降低日志详细级别                                                                             | 只保留错误/警告日志，关闭调试和详细日志，减少磁盘和IO压力 |
-| background_jobs_disabled           | actions                    | 禁用后台任务/队列                                                                            | 暂停异步队列、定时任务、批量处理等后台作业，释放资源 |
-| cache_aggressive                   | actions/performance        | 启用积极缓存策略                                                                             | 提高缓存命中率，延长缓存TTL，减少实时计算和数据库访问 |
-| recommendations_disabled           | actions                    | 禁用推荐引擎                                                                                 | 关闭个性化推荐、猜你喜欢等功能，降低算法和数据消耗 |
-| realtime_disabled                  | actions                    | 禁用实时功能                                                                                 | 关闭实时推送、消息通知、在线状态等高频实时服务 |
-| response_minimal                   | actions                    | 启用最简响应处理                                                                             | 仅返回必要字段，去除多余数据和装饰，减少响应体积 |
-| gc_forced                          | actions                    | 立即强制垃圾回收                                                                             | 触发PHP垃圾回收，释放内存，适用于内存紧张场景 |
-| emergency_cpu_mode                 | actions                    | 启用紧急 CPU 降级模式                                                                        | 降低并发、限制CPU密集型操作、优先处理核心请求 |
-| request_non_essential              | actions                    | 拒绝非必要请求                                                                               | 拒绝如统计、报表、导出等非核心业务请求，保障主流程 |
-| response_static_only               | actions/performance        | 仅返回静态响应，关闭动态内容                                                                 | 只提供静态页面或缓存内容，关闭动态渲染和计算 |
-| file_processing_disabled           | actions/memory             | 禁用文件处理相关功能                                                                         | 禁止上传、下载、解析等文件相关操作，释放内存和IO |
-| minimal_object_creation            | actions/memory             | 启用最小对象创建                                                                             | 避免大对象、复杂结构，仅创建必要对象，降低内存占用 |
-| emergency_memory_cleanup_performed | actions/memory             | 执行紧急内存清理                                                                             | 释放缓存、关闭大对象、主动清理无用数据 |
-| request_too_large                  | actions/memory             | 拒绝过大请求                                                                                 | 限制上传/POST体积，超限直接拒绝，防止内存溢出 |
-| redis_operations_reduced           | actions/redis              | 降低 Redis 操作频率                                                                          | 合并/延迟写入，减少高频读写，批量操作替代单次操作 |
-| cache_local_fallback               | actions/redis/fallback     | 启用本地缓存回退                                                                             | Redis 不可用时，自动切换为本地缓存，保障可用性 |
-| redis_query_optimized              | actions/redis              | 启用 Redis 查询优化                                                                           | 精简查询字段，减少大key操作，避免全表扫描 |
-| redis_bypass_keys                  | actions/redis              | 跳过非关键 Redis key                                                                          | 只操作核心key，跳过统计、日志等非关键数据 |
-| cache_priority_order               | actions/redis              | 设置缓存优先级顺序                                                                            | 优先缓存高频/核心数据，低频数据可降级或不缓存 |
-| database_redis_pool_size           | actions/redis              | 限制 Redis 连接池大小                                                                         | 降低最大连接数，防止Redis资源耗尽 |
-| redis_read_only                    | actions/redis              | 启用 Redis 只读模式                                                                           | 禁止写入，仅允许读取，防止数据异常或主从切换期间出错 |
-| cache_default                      | actions/redis/fallback     | 启用数据库/文件缓存回退                                                                       | Redis 故障时，自动切换为数据库或本地文件缓存 |
-| redis_writes_disabled              | actions/redis              | 禁用 Redis 写入                                                                              | 只读不写，防止写入压力过大或数据不一致 |
-| redis_bypassed                     | actions/redis              | 完全绕过 Redis                                                                               | 关闭所有Redis相关操作，直接走本地或数据库 |
-| database_query_cache               | actions/database           | 启用数据库查询缓存                                                                           | 启用SQL缓存，减少重复查询，提升响应速度 |
-| database_read_preference           | actions/database           | 优先使用数据库读副本                                                                          | 读操作优先走只读库，减轻主库压力 |
-| database_query_cache_enabled       | actions/database           | 启用频繁查询缓存                                                                             | 对高频SQL启用缓存，减少数据库负载 |
-| database_read_only                 | actions/database           | 启用数据库只读模式                                                                           | 禁止写入，仅允许读取，适用于只读场景或主库异常 |
-| database_complex_queries_disabled  | actions/database           | 禁用复杂查询                                                                                 | 禁止多表/聚合/子查询等复杂SQL，防止拖慢数据库 |
-| database_force_cache               | actions/database           | 强制所有查询缓存                                                                             | 所有SQL结果强制缓存，牺牲实时性换取性能 |
-| database_emergency_mode            | actions/database           | 启用数据库紧急模式                                                                           | 只允许核心SQL，关闭非必要查询，限制并发 |
-| response_cache_only                | actions/database           | 仅返回缓存响应                                                                               | 只返回缓存数据，数据库不可用时保障服务可用性 |
-| database_minimal_access            | actions/database           | 最小化数据库访问                                                                             | 只查核心表/字段，减少无关SQL，降低负载 |
-| database_bypassed                  | actions/database           | 完全绕过数据库                                                                               | 关闭所有数据库操作，仅依赖缓存或静态数据 |
+| Key（字段名）                        | 说明/用途                                                                                   | 备注/实现建议 |
+|--------------------------------------|---------------------------------------------------------------------------------------------|---------------|
+| disable_heavy_analytics              | 禁用重型分析功能                                                                             | 禁用大数据分析、复杂报表等高消耗分析功能，减少系统负载 |
+| reduce_log_verbosity                 | 降低日志详细级别                                                                             | 只保留错误/警告日志，关闭调试和详细日志，减少磁盘和IO压力 |
+| disable_background_jobs              | 禁用后台任务/队列                                                                            | 暂停异步队列、定时任务、批量处理等后台作业，释放资源 |
+| enable_aggressive_caching            | 启用积极缓存策略                                                                             | 提高缓存命中率，延长缓存TTL，减少实时计算和数据库访问 |
+| disable_recommendations_engine       | 禁用推荐引擎                                                                                 | 关闭个性化推荐、猜你喜欢等功能，降低算法和数据消耗 |
+| disable_realtime_features            | 禁用实时功能                                                                                 | 关闭实时推送、消息通知、在线状态等高频实时服务 |
+| enable_minimal_response_processing   | 启用最简响应处理                                                                             | 仅返回必要字段，去除多余数据和装饰，减少响应体积 |
+| gc_forced                            | 立即强制垃圾回收                                                                             | 触发PHP垃圾回收，释放内存，适用于内存紧张场景 |
+| enable_emergency_cpu_mode            | 启用紧急 CPU 降级模式                                                                        | 降低并发、限制CPU密集型操作、优先处理核心请求 |
+| enable_static_responses_only         | 仅返回静态响应，关闭动态内容                                                                 | 只提供静态页面或缓存内容，关闭动态渲染和计算 |
+| reduce_cache_size                    | 缩减缓存大小                                                                                 | 主动清理缓存，降低缓存占用比例 |
+| disable_file_processing              | 禁用文件处理相关功能                                                                         | 禁止上传、下载、解析等文件相关操作，释放内存和IO |
+| enable_minimal_object_creation       | 启用最小对象创建                                                                             | 避免大对象、复杂结构，仅创建必要对象，降低内存占用 |
+| enable_large_request_rejection       | 拒绝过大请求                                                                                 | 限制上传/POST体积，超限直接拒绝，防止内存溢出 |
+| perform_emergency_memory_cleanup     | 执行紧急内存清理                                                                             | 释放缓存、关闭大对象、主动清理无用数据 |
+| reduce_redis_operations              | 降低 Redis 操作频率                                                                          | 合并/延迟写入，减少高频读写，批量操作替代单次操作 |
+| enable_local_cache_fallback          | 启用本地缓存回退                                                                             | Redis 不可用时，自动切换为本地缓存，保障可用性 |
+| optimize_redis_queries               | 启用 Redis 查询优化                                                                           | 精简查询字段，减少大key操作，避免全表扫描 |
+| bypass_non_critical_redis            | 跳过非关键 Redis key                                                                          | 只操作核心key，跳过统计、日志等非关键数据 |
+| enable_redis_read_only_mode          | 启用 Redis 只读模式                                                                           | 禁止写入，仅允许读取，防止数据异常或主从切换期间出错 |
+| disable_redis_writes                 | 禁用 Redis 写入                                                                              | 只读不写，防止写入压力过大或数据不一致 |
+| enable_complete_redis_bypass         | 完全绕过 Redis                                                                               | 关闭所有Redis相关操作，直接走本地或数据库 |
+| enable_query_optimization            | 启用数据库查询优化                                                                           | 启用SQL缓存，减少重复查询，提升响应速度 |
+| prioritize_read_replicas             | 优先使用数据库读副本                                                                          | 读操作优先走只读库，减轻主库压力 |
+| enable_frequent_query_caching        | 启用频繁查询缓存                                                                             | 对高频SQL启用缓存，减少数据库负载 |
+| enable_database_read_only_mode       | 启用数据库只读模式                                                                           | 禁止写入，仅允许读取，适用于只读场景或主库异常 |
+| disable_complex_queries              | 禁用复杂查询                                                                                 | 禁止多表/聚合/子查询等复杂SQL，防止拖慢数据库 |
+| force_query_caching                  | 强制所有查询缓存                                                                             | 所有SQL结果强制缓存，牺牲实时性换取性能 |
+| enable_database_emergency_mode       | 启用数据库紧急模式                                                                           | 只允许核心SQL，关闭非必要查询，限制并发 |
+| enable_cache_only_responses          | 仅返回缓存响应                                                                               | 只返回缓存数据，数据库不可用时保障服务可用性 |
+| enable_minimal_database_access       | 最小化数据库访问                                                                             | 只查核心表/字段，减少无关SQL，降低负载 |
+| enable_complete_database_bypass      | 完全绕过数据库                                                                               | 关闭所有数据库操作，仅依赖缓存或静态数据 |
 | gc_frequency                       | performance_optimizations  | 垃圾回收频率（normal/increased/aggressive/continuous）                                       | 提高GC频率，适当牺牲性能换取内存释放 |
 | cache_strategy                     | performance_optimizations  | 缓存策略（如 static_files、emergency_static、extend_ttl_50_percent 等）                      | 选择更激进的缓存策略，优先静态内容，延长TTL |
 | query_timeout                      | performance_optimizations  | 查询超时策略（reduce_20_percent/reduce_50_percent/minimal）                                  | 缩短SQL/接口超时时间，防止慢查询拖垮系统 |
