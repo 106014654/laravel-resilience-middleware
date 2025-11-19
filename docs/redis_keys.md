@@ -34,38 +34,37 @@
 | enable_cache_only_responses          | 仅返回缓存响应                                                                               | 只返回缓存数据，数据库不可用时保障服务可用性 |
 | enable_minimal_database_access       | 最小化数据库访问                                                                             | 只查核心表/字段，减少无关SQL，降低负载 |
 | enable_complete_database_bypass      | 完全绕过数据库                                                                               | 关闭所有数据库操作，仅依赖缓存或静态数据 |
-| gc_frequency                       | performance_optimizations  | 垃圾回收频率（normal/increased/aggressive/continuous）                                       | 提高GC频率，适当牺牲性能换取内存释放 |
-| cache_strategy                     | performance_optimizations  | 缓存策略（如 static_files、emergency_static、extend_ttl_50_percent 等）                      | 选择更激进的缓存策略，优先静态内容，延长TTL |
-| query_timeout                      | performance_optimizations  | 查询超时策略（reduce_20_percent/reduce_50_percent/minimal）                                  | 缩短SQL/接口超时时间，防止慢查询拖垮系统 |
-| processing_mode                    | performance_optimizations  | 处理模式（如 health_check_only）                                                             | 只处理健康检查等核心请求，其他请求降级或拒绝 |
-| cache_default_ttl_extended         | performance_optimizations  | 默认缓存 TTL 延长                                                                             | 延长缓存有效期，减少频繁失效和重建 |
-| cache_ttl                          | performance_optimizations  | 缓存 TTL 设置                                                                                | 统一缩短或延长缓存TTL，动态调整 |
-| view_cache                         | performance_optimizations  | 视图缓存开关                                                                                 | 启用页面/模板缓存，减少渲染压力 |
-| route_cache                        | performance_optimizations  | 路由缓存开关                                                                                 | 启用路由缓存，减少路由解析消耗 |
-| dynamic_content                    | performance_optimizations  | 动态内容开关                                                                                 | 关闭动态内容，仅返回静态或缓存数据 |
-| cache_everything                   | performance_optimizations  | 是否缓存所有内容                                                                             | 全量缓存，牺牲实时性换取极致性能 |
-| database_timeout                   | performance_optimizations  | 数据库超时时间                                                                               | 降低SQL超时阈值，防止慢SQL拖垮服务 |
-| processing_mode                    | performance_optimizations  | 处理模式（如 health_check_only）                                                             | 只处理健康检查等核心请求，其他请求降级或拒绝 |
-| cache_size_reduction               | memory_management          | 缓存缩减百分比                                                                               | 主动清理缓存，降低缓存占用比例 |
-| filesystems_uploads_enabled        | memory_management          | 文件上传开关                                                                                 | 禁止上传，释放磁盘和内存资源 |
-| image_processing                   | memory_management          | 图片处理开关                                                                                 | 禁止图片上传、压缩、缩放等操作 |
-| file_processing                    | memory_management          | 文件处理开关                                                                                 | 禁止文件解析、导入导出等操作 |
-| object_pooling_enabled             | memory_management          | 对象池开关                                                                                   | 关闭对象池，减少内存占用 |
-| minimal_objects                    | memory_management          | 是否最小对象模式                                                                             | 只创建必要对象，避免大对象和复杂结构 |
-| request_size_limit                 | memory_management          | 请求体大小限制                                                                               | 限制上传/POST体积，超限直接拒绝 |
-| cache_redis_operations_limit       | memory_management/redis    | Redis 操作限制                                                                               | 限制高频操作，合并/延迟写入 |
-| cache_redis_compression            | memory_management/redis    | Redis 缓存压缩开关                                                                           | 启用压缩，减少内存占用 |
-| database_redis_prefix              | memory_management/redis    | Redis 数据库前缀                                                                             | 只操作指定前缀的key，便于分库分表 |
-| cache_fallback                     | fallback_strategies        | 缓存后备方案（如 array、file、database）                                                     | Redis 故障时自动切换为本地/文件/数据库缓存 |
-| database_default_read              | database_strategies        | 数据库默认读库（如 mysql_read）                                                              | 读操作优先走只读库，减轻主库压力 |
-| database_optimization_level        | database_strategies        | 数据库优化级别（如 high）                                                                    | 启用高性能索引、SQL优化、分区等措施 |
-| database_query_cache_ttl           | database_strategies        | 查询缓存 TTL                                                                                 | 延长高频SQL缓存时间，减少数据库压力 |
-| complex_queries_disabled           | database_strategies        | 复杂查询禁用标记                                                                             | 禁止多表/聚合/子查询等复杂SQL |
-| database_cache_all_queries         | database_strategies        | 所有查询缓存开关                                                                             | 所有SQL结果强制缓存，牺牲实时性换取性能 |
-| database_connection_limit          | database_strategies        | 数据库连接数限制                                                                             | 降低最大连接数，防止数据库资源耗尽 |
-| database_query_timeout             | database_strategies        | 数据库查询超时时间                                                                           | 缩短SQL超时阈值，防止慢SQL拖垮服务 |
-| database_essential_queries_only    | database_strategies        | 仅允许必要查询                                                                               | 只允许核心业务SQL，禁止统计/报表等非核心SQL |
-| routes_enabled                     | database_strategies        | 允许的路由列表（如 health、status、ping）                                                    | 只开放健康检查、状态等核心路由，其他路由降级或关闭 |
+| gc_frequency                  | 垃圾回收频率（normal/increased/aggressive/continuous） | 提高GC频率，适当牺牲性能换取内存释放 |
+| cache_strategy                | 缓存策略（如 static_files、emergency_static 等）        | 选择更激进的缓存策略，优先静态内容，延长TTL |
+| query_timeout                 | 查询超时策略（reduce_20_percent 等）                   | 缩短SQL/接口超时时间，防止慢查询拖垮系统 |
+| processing_mode               | 处理模式（如 health_check_only）                       | 只处理健康检查等核心请求，其他请求降级或拒绝 |
+| cache_default_ttl_extended    | 默认缓存 TTL 延长                                       | 延长缓存有效期，减少频繁失效和重建     |
+| cache_ttl                     | 缓存 TTL 设置                                          | 统一缩短或延长缓存TTL，动态调整        |
+| view_cache                    | 视图缓存开关                                           | 启用页面/模板缓存，减少渲染压力        |
+| route_cache                   | 路由缓存开关                                           | 启用路由缓存，减少路由解析消耗         |
+| dynamic_content               | 动态内容开关                                           | 关闭动态内容，仅返回静态或缓存数据     |
+| cache_everything              | 是否缓存所有内容                                       | 全量缓存，牺牲实时性换取极致性能       |
+| database_timeout              | 数据库超时时间                                         | 降低SQL超时阈值，防止慢SQL拖垮服务     |
+| cache_size_reduction          | 缓存缩减百分比                                         | 主动清理缓存，降低缓存占用比例         |
+| filesystems_uploads_enabled   | 文件上传开关                                           | 禁止上传，释放磁盘和内存资源           |
+| image_processing              | 图片处理开关                                           | 禁止图片上传、压缩、缩放等操作         |
+| file_processing               | 文件处理开关                                           | 禁止文件解析、导入导出等操作           |
+| object_pooling_enabled        | 对象池开关                                             | 关闭对象池，减少内存占用               |
+| minimal_objects               | 是否最小对象模式                                       | 只创建必要对象，避免大对象和复杂结构     |
+| request_size_limit            | 请求体大小限制                                         | 限制上传/POST体积，超限直接拒绝         |
+| cache_redis_operations_limit  | Redis 操作限制                                         | 限制高频操作，合并/延迟写入             |
+| cache_redis_compression       | Redis 缓存压缩开关                                     | 启用压缩，减少内存占用                 |
+| database_redis_prefix         | Redis 数据库前缀                                       | 只操作指定前缀的key，便于分库分表        |
+| cache_fallback                | 缓存后备方案（如 array、file、database）               | Redis 故障时自动切换为本地/文件/数据库缓存 |
+| database_default_read         | 数据库默认读库（如 mysql_read）                        | 读操作优先走只读库，减轻主库压力         |
+| database_optimization_level   | 数据库优化级别（如 high）                              | 启用高性能索引、SQL优化、分区等措施      |
+| database_query_cache_ttl      | 查询缓存 TTL                                           | 延长高频SQL缓存时间，减少数据库压力      |
+| complex_queries_disabled      | 复杂查询禁用标记                                       | 禁止多表/聚合/子查询等复杂SQL           |
+| database_cache_all_queries    | 所有查询缓存开关                                       | 所有SQL结果强制缓存，牺牲实时性换取性能  |
+| database_connection_limit     | 数据库连接数限制                                       | 降低最大连接数，防止数据库资源耗尽       |
+| database_query_timeout        | 数据库查询超时时间                                     | 缩短SQL超时阈值，防止慢SQL拖垮服务       |
+| database_essential_queries_only | 仅允许必要查询                                       | 只允许核心业务SQL，禁止统计/报表等非核心SQL |
+| routes_enabled                | 允许的路由列表（如 health、status、ping）              | 只开放健康检查、状态等核心路由，其他路由降级或关闭 |
 
 ---
 
