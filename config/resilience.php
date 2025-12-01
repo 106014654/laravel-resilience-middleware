@@ -19,10 +19,6 @@ return [
     */
 
     'system_monitor' => [
-        // 连接超时配置
-        'redis_connection_timeout' => env('RESILIENCE_REDIS_CONNECTION_TIMEOUT', 2),
-        'mysql_connection_timeout' => env('RESILIENCE_MYSQL_CONNECTION_TIMEOUT', 3),
-        /*
         /*
         | Redis 监控配置（可能为远程服务器）
         */
